@@ -1,0 +1,26 @@
+# Environment variables
+.env
+
+# Go
+server/tmp/
+*.exe
+*.out
+
+# Node / React
+node_modules/
+dist/
+.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PDF (design doc — not source code)
+*.pdf
