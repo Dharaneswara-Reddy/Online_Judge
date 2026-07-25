@@ -1,0 +1,128 @@
+/* ============================================
+   Home Page Styles
+   ============================================ */
+
+.home-page {
+  min-height: 100vh;
+}
+
+/* -- Navigation bar -- */
+.home-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 32px;
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(10, 15, 28, 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.home-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.home-nav-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.home-nav-user {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* -- Main content -- */
+.home-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 65px);
+  padding: 32px;
+}
+
+/* -- Welcome card -- */
+.home-welcome-card {
+  text-align: center;
+  padding: 48px;
+  max-width: 520px;
+  width: 100%;
+}
+
+.home-welcome-emoji {
+  font-size: 3rem;
+  margin-bottom: 16px;
+}
+
+.home-welcome-title {
+  font-size: 1.8rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 12px;
+  background: linear-gradient(135deg, var(--text-primary), var(--accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.home-welcome-text {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.7;
+  margin-bottom: 32px;
+}
+
+/* -- Stat boxes -- */
+.home-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.home-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition-fast);
+}
+
+.home-stat:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.home-stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.home-stat-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+/* -- Responsive -- */
+@media (max-width: 480px) {
+  .home-nav {
+    padding: 12px 16px;
+  }
+
+  .home-welcome-card {
+    padding: 32px 20px;
+  }
+
+  .home-stats {
+    grid-template-columns: 1fr;
+  }
+}

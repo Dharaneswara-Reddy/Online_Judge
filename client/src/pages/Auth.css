@@ -1,0 +1,185 @@
+/* ============================================
+   Auth Pages — Shared Styles
+   ============================================
+   Styles for the Login and Signup pages.
+   Uses glassmorphism cards, gradient orbs for
+   background decoration, and smooth animations.
+   ============================================ */
+
+/* -- Page layout -- */
+.auth-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* -- Background orb decorations -- */
+.auth-bg-decoration {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.auth-bg-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.15;
+}
+
+.auth-bg-orb-1 {
+  width: 500px;
+  height: 500px;
+  background: var(--accent);
+  top: -10%;
+  right: -5%;
+  animation: pulseGlow 8s ease-in-out infinite;
+}
+
+.auth-bg-orb-2 {
+  width: 400px;
+  height: 400px;
+  background: #6366f1;
+  bottom: -10%;
+  left: -5%;
+  animation: pulseGlow 10s ease-in-out infinite 2s;
+}
+
+.auth-bg-orb-3 {
+  width: 300px;
+  height: 300px;
+  background: #0ea5e9;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  animation: pulseGlow 12s ease-in-out infinite 4s;
+}
+
+/* -- Auth card container -- */
+.auth-container {
+  width: 100%;
+  max-width: 420px;
+  padding: 40px;
+  background: var(--bg-card);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card), 0 0 60px rgba(0, 0, 0, 0.2);
+  position: relative;
+  z-index: 1;
+}
+
+/* Wider variant for the signup form (more fields) */
+.auth-container-wide {
+  max-width: 520px;
+}
+
+/* -- Header section -- */
+.auth-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.auth-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.auth-logo-icon {
+  font-size: 1.8rem;
+  filter: drop-shadow(0 0 8px var(--accent-glow));
+}
+
+.auth-logo-text {
+  font-size: 1.5rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: -0.02em;
+}
+
+.auth-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  letter-spacing: -0.02em;
+}
+
+.auth-subtitle {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+}
+
+/* -- Form layout -- */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: 24px;
+}
+
+/* Two-column row for side-by-side fields */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+/* Stack on small screens */
+@media (max-width: 480px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-container {
+    padding: 28px 20px;
+  }
+
+  .auth-container-wide {
+    max-width: 100%;
+  }
+}
+
+/* -- Footer link -- */
+.auth-footer {
+  text-align: center;
+  margin-top: 24px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.auth-footer a {
+  font-weight: 600;
+}
+
+/* -- Alert spacing -- */
+.auth-form + .alert,
+.auth-header + .alert {
+  margin-bottom: 8px;
+}
+
+.auth-container .alert {
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+
+/* -- Date input styling for dark theme -- */
+input[type="date"].form-input {
+  color-scheme: dark;
+}
+
+input[type="date"].form-input::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  cursor: pointer;
+}
