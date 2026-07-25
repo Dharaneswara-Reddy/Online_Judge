@@ -1,0 +1,12 @@
+/* ============================================
+   App-Level Styles
+   ============================================
+   Styles specific to the app layout and
+   structure. Component-specific styles live
+   in their own CSS files or inline.
+   ============================================ */
+
+/* Clear all Vite default styles */
+#root {
+  min-height: 100vh;
+}
