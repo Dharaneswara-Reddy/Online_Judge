@@ -1,0 +1,20 @@
+/* ============================================
+   Auth Background — Canvas Wrapper
+   ============================================
+   Positions the dot-field canvas behind the
+   auth card. No pointer-events so the form
+   remains fully interactive.
+   ============================================ */
+
+.auth-bg-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.auth-bg-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
