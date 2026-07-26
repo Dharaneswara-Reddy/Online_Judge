@@ -1,21 +1,27 @@
 /**
  * Signup.jsx — Registration page component
  *
- * A premium dark-themed signup form matching the Login page style.
- * Collects full name, username, email, password, and optional DOB.
- * After successful registration, redirects to the login page.
+ * Styled as a terminal / code editor window matching the
+ * Login page. Shares the AuthBackground canvas and
+ * TerminalChrome components. Collects full name, username,
+ * email, password, and optional DOB.
  *
  * Features:
- * - Full registration form with field validation
+ * - AuthBackground canvas with interactive dot-field
+ * - TerminalChrome bar with "~/auth/register" tab
+ * - Full registration form with monospace field labels
+ * - Arrow icon slides in on button hover
  * - Inline error messages per field
  * - Server error display
  * - Loading state on submit
- * - Fade-in animation on mount
+ * - Staggered entrance animation on mount
  */
 
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import AuthBackground from '../components/auth/AuthBackground';
+import TerminalChrome from '../components/ui/TerminalChrome';
 import './Auth.css';
 
 function Signup() {
@@ -123,126 +129,132 @@ function Signup() {
 
   return (
     <div className="auth-page">
-      {/* Background decoration elements */}
-      <div className="auth-bg-decoration">
-        <div className="auth-bg-orb auth-bg-orb-1"></div>
-        <div className="auth-bg-orb auth-bg-orb-2"></div>
-        <div className="auth-bg-orb auth-bg-orb-3"></div>
-      </div>
+      {/* Mouse-reactive dot-field background */}
+      <AuthBackground />
 
-      <div className="auth-container auth-container-wide fade-in-up">
-        {/* Logo / Brand */}
-        <div className="auth-header">
-          <div className="auth-logo">
-            <span className="auth-logo-icon">⚡</span>
-            <span className="auth-logo-text">CodeArena</span>
+      <div className="auth-container auth-container-wide">
+        {/* Terminal chrome bar with macOS dots */}
+        <TerminalChrome path="~/auth/register" />
+
+        {/* Card body */}
+        <div className="auth-body">
+          {/* Logo / Brand */}
+          <div className="auth-header">
+            <div className="auth-logo">
+              <span className="auth-logo-icon">⚡</span>
+              <span className="auth-logo-text">CodeArena</span>
+            </div>
+            <h1 className="auth-title">Create your account</h1>
+            <p className="auth-subtitle">Join the arena and start solving</p>
           </div>
-          <h1 className="auth-title">Create your account</h1>
-          <p className="auth-subtitle">Join the arena and start solving</p>
+
+          {/* Server error alert */}
+          {serverError && (
+            <div className="alert alert-error">
+              {serverError}
+            </div>
+          )}
+
+          {/* Signup form */}
+          <form onSubmit={handleSubmit} className="auth-form">
+            <div className="form-row">
+              <div className="form-group">
+                <label htmlFor="signup-fullname" className="form-label">full_name</label>
+                <input
+                  id="signup-fullname"
+                  type="text"
+                  className={`form-input ${errors.fullName ? 'error' : ''}`}
+                  placeholder="John Doe"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  autoFocus
+                />
+                {errors.fullName && <span className="form-error">{errors.fullName}</span>}
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="signup-username" className="form-label">username</label>
+                <input
+                  id="signup-username"
+                  type="text"
+                  className={`form-input ${errors.username ? 'error' : ''}`}
+                  placeholder="johndoe"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                />
+                {errors.username && <span className="form-error">{errors.username}</span>}
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="signup-email" className="form-label">email</label>
+              <input
+                id="signup-email"
+                type="email"
+                className={`form-input ${errors.email ? 'error' : ''}`}
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+              />
+              {errors.email && <span className="form-error">{errors.email}</span>}
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label htmlFor="signup-password" className="form-label">password</label>
+                <input
+                  id="signup-password"
+                  type="password"
+                  className={`form-input ${errors.password ? 'error' : ''}`}
+                  placeholder="Min. 6 characters"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
+                />
+                {errors.password && <span className="form-error">{errors.password}</span>}
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="signup-dob" className="form-label">dob <span className="text-muted" style={{ fontFamily: 'var(--font-family)' }}>(optional)</span></label>
+                <input
+                  id="signup-dob"
+                  type="date"
+                  className="form-input"
+                  value={dob}
+                  onChange={(e) => setDob(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="btn btn-primary btn-block"
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <>
+                  <span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }}></span>
+                  <span>Creating account...</span>
+                </>
+              ) : (
+                <>
+                  <span>Create account</span>
+                  <svg className="btn-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                    <polyline points="12 5 19 12 12 19" />
+                  </svg>
+                </>
+              )}
+            </button>
+          </form>
+
+          {/* Link to login */}
+          <p className="auth-footer">
+            Already have an account?{' '}
+            <Link to="/login">Sign in</Link>
+          </p>
         </div>
-
-        {/* Server error alert */}
-        {serverError && (
-          <div className="alert alert-error">
-            {serverError}
-          </div>
-        )}
-
-        {/* Signup form */}
-        <form onSubmit={handleSubmit} className="auth-form">
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="signup-fullname" className="form-label">Full Name</label>
-              <input
-                id="signup-fullname"
-                type="text"
-                className={`form-input ${errors.fullName ? 'error' : ''}`}
-                placeholder="John Doe"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                autoFocus
-              />
-              {errors.fullName && <span className="form-error">{errors.fullName}</span>}
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="signup-username" className="form-label">Username</label>
-              <input
-                id="signup-username"
-                type="text"
-                className={`form-input ${errors.username ? 'error' : ''}`}
-                placeholder="johndoe"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-              />
-              {errors.username && <span className="form-error">{errors.username}</span>}
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="signup-email" className="form-label">Email</label>
-            <input
-              id="signup-email"
-              type="email"
-              className={`form-input ${errors.email ? 'error' : ''}`}
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-            />
-            {errors.email && <span className="form-error">{errors.email}</span>}
-          </div>
-
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="signup-password" className="form-label">Password</label>
-              <input
-                id="signup-password"
-                type="password"
-                className={`form-input ${errors.password ? 'error' : ''}`}
-                placeholder="Min. 6 characters"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="new-password"
-              />
-              {errors.password && <span className="form-error">{errors.password}</span>}
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="signup-dob" className="form-label">
-                Date of Birth <span className="text-muted">(optional)</span>
-              </label>
-              <input
-                id="signup-dob"
-                type="date"
-                className="form-input"
-                value={dob}
-                onChange={(e) => setDob(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            className="btn btn-primary btn-block"
-            disabled={isLoading}
-          >
-            {isLoading ? (
-              <>
-                <span className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }}></span>
-                Creating account...
-              </>
-            ) : (
-              'Create account'
-            )}
-          </button>
-        </form>
-
-        {/* Link to login */}
-        <p className="auth-footer">
-          Already have an account?{' '}
-          <Link to="/login">Sign in</Link>
-        </p>
       </div>
     </div>
   );

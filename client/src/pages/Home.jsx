@@ -18,21 +18,21 @@ function Home() {
       {/* Navigation bar */}
       <nav className="home-nav">
         <div className="home-nav-brand">
-          <span className="auth-logo-icon">⚡</span>
-          <span className="auth-logo-text" style={{ fontSize: '1.2rem' }}>CodeArena</span>
+          <span style={{ fontSize: '1.2rem' }}>⚡</span>
+          <span style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--accent)', letterSpacing: '-0.02em' }}>CodeArena</span>
         </div>
         <div className="home-nav-right">
           <span className="home-nav-user">
             {user?.full_name}
           </span>
-          <button onClick={logout} className="btn btn-ghost" style={{ padding: '8px 16px', fontSize: '0.85rem' }}>
+          <button onClick={logout} className="btn btn-ghost" style={{ padding: '7px 14px', fontSize: '0.8rem' }}>
             Logout
           </button>
         </div>
       </nav>
 
       {/* Main content */}
-      <main className="home-content fade-in-up">
+      <main className="home-content">
         <div className="home-welcome-card card">
           <div className="home-welcome-emoji">🎯</div>
           <h1 className="home-welcome-title">

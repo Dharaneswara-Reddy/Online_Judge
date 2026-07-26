@@ -1,5 +1,5 @@
 /* ============================================
-   Home Page Styles
+   Home Page Styles — Terminal Theme
    ============================================ */
 
 .home-page {
@@ -11,11 +11,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 32px;
+  padding: 14px 28px;
   border-bottom: 1px solid var(--border-color);
-  background: rgba(10, 15, 28, 0.8);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: var(--bg-secondary);
 }
 
 .home-nav-brand {
@@ -27,11 +25,11 @@
 .home-nav-right {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
 }
 
 .home-nav-user {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   color: var(--text-secondary);
   font-weight: 500;
 }
@@ -41,71 +39,69 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: calc(100vh - 65px);
+  min-height: calc(100vh - 57px);
   padding: 32px;
 }
 
 /* -- Welcome card -- */
 .home-welcome-card {
   text-align: center;
-  padding: 48px;
-  max-width: 520px;
+  padding: 44px;
+  max-width: 500px;
   width: 100%;
 }
 
 .home-welcome-emoji {
-  font-size: 3rem;
-  margin-bottom: 16px;
+  font-size: 2.5rem;
+  margin-bottom: 14px;
 }
 
 .home-welcome-title {
-  font-size: 1.8rem;
+  font-size: 1.6rem;
   font-weight: 700;
   letter-spacing: -0.02em;
-  margin-bottom: 12px;
-  background: linear-gradient(135deg, var(--text-primary), var(--accent));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  margin-bottom: 10px;
+  color: var(--text-primary);
 }
 
 .home-welcome-text {
   color: var(--text-secondary);
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   line-height: 1.7;
-  margin-bottom: 32px;
+  margin-bottom: 28px;
 }
 
 /* -- Stat boxes -- */
 .home-stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+  gap: 12px;
 }
 
 .home-stat {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 16px;
-  background: rgba(255, 255, 255, 0.03);
+  padding: 14px;
+  background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   transition: border-color var(--transition-fast);
 }
 
 .home-stat:hover {
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.14);
 }
 
 .home-stat-value {
-  font-size: 1.5rem;
+  font-size: 1.4rem;
   font-weight: 700;
+  font-family: var(--font-mono);
   color: var(--accent);
 }
 
 .home-stat-label {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -119,7 +115,7 @@
   }
 
   .home-welcome-card {
-    padding: 32px 20px;
+    padding: 28px 20px;
   }
 
   .home-stats {
