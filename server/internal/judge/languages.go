@@ -33,7 +33,7 @@ var languages = map[string]Language{
 	},
 	"go": {
 		ID: "go", SourceFile: "main.go",
-		CompileCmd: []string{"go", "build", "-o", "main", "main.go"},
+		CompileCmd: []string{"go", "build", "-buildvcs=false", "-o", "main", "main.go"},
 		RunCmd:     []string{"./main"},
 	},
 }
