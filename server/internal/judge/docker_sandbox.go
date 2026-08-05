@@ -14,7 +14,7 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
-const judgeImage = "codearena/judge-sandbox:latest"
+const judgeImage = "codearena-sandbox:latest"
 
 // DockerSandbox implements the Sandbox interface using real Docker
 // containers for isolated code execution.
@@ -38,13 +38,13 @@ func (d *DockerSandbox) NewSubmission(ctx context.Context, language, sourceCode 
 		return nil, err
 	}
 
-	pidsLimit := int64(64)
+	pidsLimit := int64(256)
 	memBytes := limits.MemoryLimitMB * 1024 * 1024
 
 	hostConfig := &container.HostConfig{
 		NetworkMode:    "none",
 		ReadonlyRootfs: true,
-		Tmpfs:          map[string]string{"/home/sandbox": "rw,size=64m,uid=1000,gid=1000"},
+		Tmpfs:          map[string]string{"/home/sandbox": "rw,exec,size=256m,uid=1000,gid=1000", "/tmp": "rw,exec,size=256m,uid=1000,gid=1000"},
 		Resources: container.Resources{
 			Memory:     memBytes,
 			MemorySwap: memBytes, // no swap headroom
@@ -60,17 +60,18 @@ func (d *DockerSandbox) NewSubmission(ctx context.Context, language, sourceCode 
 		WorkingDir: "/home/sandbox",
 	}, hostConfig, nil, nil, "")
 	if err != nil {
-		return nil, fmt.Errorf("create container: %w", err)
+		return nil, fmt.Errorf("ContainerCreate failed: %w", err)
 	}
 
 	if err := d.cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
-		return nil, fmt.Errorf("start container: %w", err)
+		d.cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{Force: true})
+		return nil, fmt.Errorf("ContainerStart failed: %w", err)
 	}
 
 	sub := &dockerSubmission{cli: d.cli, containerID: resp.ID, lang: lang, limits: limits}
 	if err := sub.writeSource(ctx, sourceCode); err != nil {
 		sub.Close(ctx)
-		return nil, err
+		return nil, fmt.Errorf("writeSource failed: %w", err)
 	}
 	return sub, nil
 }
@@ -84,14 +85,16 @@ type dockerSubmission struct {
 	limits      Limits
 }
 
-// writeSource archives the source code into a tar stream and copies it
-// into the container's working directory.
+// writeSource writes the source code into the container's working directory.
 func (s *dockerSubmission) writeSource(ctx context.Context, sourceCode string) error {
-	tarBuf, err := tarSingleFile(s.lang.SourceFile, sourceCode)
+	res, err := s.exec(ctx, []string{"sh", "-c", fmt.Sprintf("cat > %s", s.lang.SourceFile)}, sourceCode)
 	if err != nil {
-		return err
+		return fmt.Errorf("write source: %w", err)
 	}
-	return s.cli.CopyToContainer(ctx, s.containerID, "/home/sandbox", tarBuf, types.CopyToContainerOptions{})
+	if res.ExitCode != 0 {
+		return fmt.Errorf("write source failed (exit %d): %s", res.ExitCode, res.Stderr)
+	}
+	return nil
 }
 
 // Compile runs the language's compile command inside the container.
@@ -100,21 +103,32 @@ func (s *dockerSubmission) Compile(ctx context.Context) (ExecuteResult, error) {
 	if s.lang.CompileCmd == nil {
 		return ExecuteResult{ExitCode: 0}, nil
 	}
-	return s.exec(ctx, s.lang.CompileCmd, "")
+	// Give compilers up to 15 seconds to finish building
+	compileCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	return s.execWithCtx(compileCtx, s.lang.CompileCmd, "")
 }
 
 // Run executes the compiled/interpreted program with the given stdin.
 func (s *dockerSubmission) Run(ctx context.Context, stdin string) (ExecuteResult, error) {
-	return s.exec(ctx, s.lang.RunCmd, stdin)
-}
-
-// exec runs a command inside the container with a wall-clock timeout.
-func (s *dockerSubmission) exec(ctx context.Context, cmd []string, stdin string) (ExecuteResult, error) {
 	execCtx, cancel := context.WithTimeout(ctx, s.limits.TimeLimit)
 	defer cancel()
 
+	return s.execWithCtx(execCtx, s.lang.RunCmd, stdin)
+}
+
+// exec runs a command inside the container with a timeout context.
+func (s *dockerSubmission) exec(ctx context.Context, cmd []string, stdin string) (ExecuteResult, error) {
+	execCtx, cancel := context.WithTimeout(ctx, s.limits.TimeLimit)
+	defer cancel()
+	return s.execWithCtx(execCtx, cmd, stdin)
+}
+
+func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin string) (ExecuteResult, error) {
 	execResp, err := s.cli.ContainerExecCreate(ctx, s.containerID, types.ExecConfig{
 		Cmd:          cmd,
+		Env:          []string{"GOCACHE=/tmp/gocache", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin"},
 		AttachStdin:  stdin != "",
 		AttachStdout: true,
 		AttachStderr: true,
@@ -144,9 +158,31 @@ func (s *dockerSubmission) exec(ctx context.Context, cmd []string, stdin string)
 		copyDone <- cErr
 	}()
 
+	// Monitor exec process; close attach connection as soon as process exits
+	// to avoid blocking on stdcopy if child processes keep file descriptors open.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				insp, err := s.cli.ContainerExecInspect(context.Background(), execResp.ID)
+				if err == nil && !insp.Running {
+					attach.Close()
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+	}()
+
 	select {
-	case <-execCtx.Done():
-		return ExecuteResult{TimedOut: true}, nil
+	case <-ctx.Done():
+		return ExecuteResult{
+			TimedOut: true,
+			ExitCode: 124,
+			Stderr:   "Command execution timed out",
+		}, nil
 	case cErr := <-copyDone:
 		if cErr != nil {
 			return ExecuteResult{}, fmt.Errorf("stream output: %w", cErr)
