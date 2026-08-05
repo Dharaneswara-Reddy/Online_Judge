@@ -7,6 +7,7 @@
  * full problem list page in the next implementation phase.
  */
 
+import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import './Home.css';
 
@@ -22,6 +23,9 @@ function Home() {
           <span style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--accent)', letterSpacing: '-0.02em' }}>CodeArena</span>
         </div>
         <div className="home-nav-right">
+          <Link to="/playground" className="btn btn-ghost" style={{ padding: '7px 14px', fontSize: '0.8rem', textDecoration: 'none' }}>
+            ▶ Playground
+          </Link>
           <span className="home-nav-user">
             {user?.full_name}
           </span>
