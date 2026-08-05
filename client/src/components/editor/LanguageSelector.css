@@ -1,0 +1,26 @@
+.lang-select-wrap { position: relative; }
+
+.lang-select {
+  appearance: none;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  padding: 8px 30px 8px 12px;
+  cursor: pointer;
+}
+.lang-select:focus { outline: none; border-color: var(--accent); }
+.lang-select:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.lang-select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 10px; top: 50%;
+  width: 8px; height: 8px;
+  border-right: 1.5px solid var(--text-muted);
+  border-bottom: 1.5px solid var(--text-muted);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
