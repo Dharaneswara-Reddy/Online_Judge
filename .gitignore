@@ -3,6 +3,8 @@
 
 # Go
 server/tmp/
+server/api
+api
 *.exe
 *.out
 
