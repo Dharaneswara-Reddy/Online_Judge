@@ -1,0 +1,14 @@
+.playground-page { min-height: 100vh; background: var(--bg-primary); padding: 24px; display: flex; justify-content: center; }
+.playground-frame { width: 100%; max-width: 1400px; border: 1px solid rgba(255,255,255,0.08); border-radius: var(--radius-lg); overflow: hidden; background: var(--bg-panel); display: flex; flex-direction: column; }
+.playground-body { display: flex; min-height: 640px; }
+.playground-editor-col { flex: 1 1 62%; display: flex; flex-direction: column; border-right: 1px solid rgba(255,255,255,0.08); }
+.playground-panel-col { flex: 1 1 38%; display: flex; flex-direction: column; }
+.playground-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.run-btn { background: var(--accent); color: var(--bg-panel); border: none; border-radius: var(--radius-sm); padding: 8px 20px; font-weight: 600; font-size: 13px; cursor: pointer; transition: background-color .15s ease, transform .15s ease; letter-spacing: 0.02em; }
+.run-btn:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-1px); }
+.run-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+@media (max-width: 860px) {
+  .playground-body { flex-direction: column; }
+  .playground-editor-col { border-right: none; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .code-editor-wrap { min-height: 320px; }
+}
