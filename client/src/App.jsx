@@ -16,6 +16,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Home from './pages/Home';
+import Playground from './pages/Playground';
 import './App.css';
 
 function App() {
@@ -47,6 +48,7 @@ function App() {
         {/* Protected routes — require authentication */}
         <Route element={<ProtectedRoute />}>
           <Route path="/" element={<Home />} />
+          <Route path="/playground" element={<Playground />} />
         </Route>
 
         {/* Catch-all — redirect unknown routes to home */}
