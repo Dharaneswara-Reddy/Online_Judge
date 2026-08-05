@@ -4,11 +4,14 @@
 package routes
 
 import (
+	"log"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 
 	"github.com/toji339/online-judge/internal/config"
 	"github.com/toji339/online-judge/internal/controllers"
+	"github.com/toji339/online-judge/internal/judge"
 	"github.com/toji339/online-judge/internal/middleware"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -58,6 +61,23 @@ func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
 		}
 	}
 
-	// 5. Return the configured router
+	// 5. Mount the judge (code execution) routes
+	//    Initialize Docker sandbox — if it fails, the server still starts
+	//    but code execution will be unavailable.
+	sandbox, err := judge.NewDockerSandbox()
+	if err != nil {
+		log.Printf("WARNING: Docker sandbox unavailable: %v (code execution disabled)", err)
+	} else {
+		judgeController := controllers.NewJudgeController(sandbox)
+		judgeGroup := router.Group("/api/judge")
+		judgeGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+		{
+			judgeGroup.POST("/run", judgeController.RunCode)
+			judgeGroup.POST("/run-raw", judgeController.RunRaw)
+		}
+	}
+
+	// 6. Return the configured router
 	return router
 }
+
