@@ -13,6 +13,8 @@ import (
 	"github.com/toji339/online-judge/internal/controllers"
 	"github.com/toji339/online-judge/internal/judge"
 	"github.com/toji339/online-judge/internal/middleware"
+	"github.com/toji339/online-judge/internal/problem"
+	"github.com/toji339/online-judge/internal/problem/mongorepo"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
@@ -23,17 +25,10 @@ import (
 // It accepts the MongoDB database reference and app config so
 // it can inject them into controllers without using globals.
 func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
-	// Steps to follow while setting up routes
-	// =========================================
-
 	// 1. Create a new Gin engine with default middleware (logger, recovery)
 	router := gin.Default()
 
 	// 2. Configure CORS to allow the React frontend to make requests
-	//    - AllowOrigins: only the frontend URL (no wildcard)
-	//    - AllowCredentials: true (so the browser sends cookies)
-	//    - AllowMethods: the HTTP methods our API uses
-	//    - AllowHeaders: Content-Type for JSON requests
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{cfg.ClientURL},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -45,8 +40,6 @@ func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
 	authController := controllers.NewAuthController(db, cfg.JWTSecret)
 
 	// 4. Mount the auth routes
-	//    Public routes: register, login, logout
-	//    Protected routes: /me (requires valid JWT cookie)
 	auth := router.Group("/api/auth")
 	{
 		auth.POST("/register", authController.Register)
@@ -62,8 +55,7 @@ func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
 	}
 
 	// 5. Mount the judge (code execution) routes
-	//    Initialize Docker sandbox — if it fails, the server still starts
-	//    but code execution will be unavailable.
+	var sandbox judge.Sandbox
 	sandbox, err := judge.NewDockerSandbox()
 	if err != nil {
 		log.Printf("WARNING: Docker sandbox unavailable: %v (code execution disabled)", err)
@@ -77,7 +69,38 @@ func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
 		}
 	}
 
-	// 6. Return the configured router
+	// 6. Mount problem routes
+	problemRepo := mongorepo.New(db)
+	problemSvc := problem.NewService(problemRepo)
+	problemController := controllers.NewProblemController(problemSvc)
+
+	// Public problem routes — no auth required
+	publicProblems := router.Group("/api/problems")
+	{
+		publicProblems.GET("", problemController.ListProblems)
+		publicProblems.GET("/:slug", problemController.GetProblem)
+	}
+
+	// Admin-only problem routes — require auth + admin role
+	adminProblems := router.Group("/api/problems")
+	adminProblems.Use(middleware.AuthMiddleware(cfg.JWTSecret), middleware.AdminOnly())
+	{
+		adminProblems.POST("", problemController.CreateProblem)
+		adminProblems.PUT("/:id", problemController.UpdateProblem)
+		adminProblems.POST("/:id/testcases", problemController.AddTestCase)
+		adminProblems.GET("/:id/testcases", problemController.ListTestCases)
+	}
+
+	// 7. Mount submission routes (authenticated, synchronous for now)
+	if sandbox != nil {
+		submissionController := controllers.NewSubmissionController(problemSvc, sandbox)
+		submitGroup := router.Group("/api/problems")
+		submitGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+		{
+			submitGroup.POST("/:slug/submit", submissionController.Submit)
+		}
+	}
+
+	// 8. Return the configured router
 	return router
 }
-
