@@ -23,6 +23,9 @@ function Home() {
           <span style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--accent)', letterSpacing: '-0.02em' }}>CodeArena</span>
         </div>
         <div className="home-nav-right">
+          <Link to="/problems" className="btn btn-ghost" style={{ padding: '7px 14px', fontSize: '0.8rem', textDecoration: 'none', borderColor: 'var(--accent)', color: 'var(--accent)' }}>
+            Problems
+          </Link>
           <Link to="/playground" className="btn btn-ghost" style={{ padding: '7px 14px', fontSize: '0.8rem', textDecoration: 'none' }}>
             ▶ Playground
           </Link>
@@ -43,8 +46,8 @@ function Home() {
             Welcome, {user?.full_name?.split(' ')[0]}!
           </h1>
           <p className="home-welcome-text">
-            You&apos;re all set. The problem list, War Rooms, and discussions
-            are coming soon. For now, your authentication is working perfectly.
+            Start solving problems from the <Link to="/problems" style={{ color: 'var(--accent)' }}>Problem List</Link>, or experiment freely in the <Link to="/playground" style={{ color: 'var(--accent)' }}>Playground</Link>.
+            War Rooms and discussions are coming soon.
           </p>
           <div className="home-stats">
             <div className="home-stat">
