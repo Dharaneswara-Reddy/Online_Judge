@@ -93,6 +93,43 @@ func EnsureIndexes(db *mongo.Database) error {
 		return fmt.Errorf("failed to create indexes: %w", err)
 	}
 
-	log.Println("Database indexes created successfully")
+	log.Println("User indexes created successfully")
+
+	// --- Problem collection indexes ---
+	problemsColl := db.Collection("problems")
+	problemIndexes := []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "slug", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{Key: "difficulty", Value: 1}},
+		},
+		{
+			Keys: bson.D{{Key: "tags", Value: 1}},
+		},
+	}
+	_, err = problemsColl.Indexes().CreateMany(ctx, problemIndexes)
+	if err != nil {
+		return fmt.Errorf("failed to create problem indexes: %w", err)
+	}
+	log.Println("Problem indexes created successfully")
+
+	// --- Test case collection indexes ---
+	testCasesColl := db.Collection("test_cases")
+	testCaseIndexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: "problem_id", Value: 1},
+				{Key: "is_sample", Value: 1},
+			},
+		},
+	}
+	_, err = testCasesColl.Indexes().CreateMany(ctx, testCaseIndexes)
+	if err != nil {
+		return fmt.Errorf("failed to create test case indexes: %w", err)
+	}
+	log.Println("Test case indexes created successfully")
+
 	return nil
 }
