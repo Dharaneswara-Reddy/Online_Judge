@@ -1,0 +1,232 @@
+/* ============================================
+   Problems List Page Styles
+   ============================================ */
+
+.problems-page {
+  min-height: 100vh;
+}
+
+.problems-content {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+/* -- Header + Filters -- */
+.problems-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.problems-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.problems-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.filter-btn {
+  padding: 6px 14px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-family: var(--font-family);
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.filter-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filter-btn--active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.filter-btn--active:hover {
+  background: var(--accent-hover);
+  color: var(--accent-contrast);
+}
+
+/* -- Loading -- */
+.problems-loading {
+  display: flex;
+  justify-content: center;
+  padding: 64px 0;
+}
+
+/* -- Table -- */
+.problems-table-wrap {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.problems-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.problems-table thead {
+  background: var(--bg-secondary);
+}
+
+.problems-table th {
+  padding: 12px 16px;
+  text-align: left;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.th-num { width: 50px; }
+.th-difficulty { width: 110px; }
+.th-acceptance { width: 100px; text-align: center; }
+
+.problems-table td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: middle;
+}
+
+.problem-row {
+  transition: background var(--transition-fast);
+}
+
+.problem-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.problem-row:last-child td {
+  border-bottom: none;
+}
+
+.td-num {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.td-title {
+  font-weight: 500;
+}
+
+.problem-link {
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+.problem-link:hover {
+  color: var(--accent);
+}
+
+.td-acceptance {
+  text-align: center;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+/* -- Difficulty badges -- */
+.difficulty-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+}
+
+.badge-easy {
+  background: rgba(62, 207, 142, 0.1);
+  color: var(--success);
+  border: 1px solid rgba(62, 207, 142, 0.2);
+}
+
+.badge-medium {
+  background: rgba(227, 168, 87, 0.1);
+  color: var(--accent);
+  border: 1px solid rgba(227, 168, 87, 0.2);
+}
+
+.badge-hard {
+  background: rgba(241, 85, 76, 0.1);
+  color: var(--error);
+  border: 1px solid rgba(241, 85, 76, 0.2);
+}
+
+/* -- Tag pills -- */
+.tag-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  margin: 2px 4px 2px 0;
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+}
+
+/* -- Empty state -- */
+.problems-empty {
+  text-align: center;
+  padding: 40px 16px !important;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* -- Pagination -- */
+.problems-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.pagination-btn {
+  padding: 7px 16px !important;
+  font-size: 0.8rem !important;
+}
+
+.pagination-info {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+/* -- Responsive -- */
+@media (max-width: 640px) {
+  .problems-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .th-tags,
+  .td-tags,
+  .th-acceptance,
+  .td-acceptance {
+    display: none;
+  }
+}
