@@ -4,6 +4,7 @@ package problemtest
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/toji339/online-judge/internal/problem"
@@ -55,10 +56,24 @@ func (r *FakeRepository) GetByID(_ context.Context, id string) (*problem.Problem
 	return nil, problem.ErrNotFound
 }
 
-func (r *FakeRepository) List(_ context.Context, filter problem.ListFilter) ([]problem.Problem, error) {
+func (r *FakeRepository) GetByIDs(_ context.Context, ids []string) ([]problem.Problem, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	result := []problem.Problem{}
+	for _, p := range r.problems {
+		if wanted[p.ID] {
+			result = append(result, p)
+		}
+	}
+	return result, nil
+}
 
+// filtered applies every ListFilter predicate except pagination.
+func (r *FakeRepository) filtered(filter problem.ListFilter) []problem.Problem {
 	var result []problem.Problem
 	for _, p := range r.problems {
 		if filter.Difficulty != "" && string(p.Difficulty) != filter.Difficulty {
@@ -67,8 +82,28 @@ func (r *FakeRepository) List(_ context.Context, filter problem.ListFilter) ([]p
 		if filter.Tag != "" && !containsTag(p.Tags, filter.Tag) {
 			continue
 		}
+		if filter.Company != "" && !containsCompany(p.CompanyTags, filter.Company) {
+			continue
+		}
+		if filter.Search != "" && !strings.Contains(strings.ToLower(p.Title), strings.ToLower(filter.Search)) {
+			continue
+		}
 		result = append(result, p)
 	}
+	return result
+}
+
+func (r *FakeRepository) Count(_ context.Context, filter problem.ListFilter) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.filtered(filter)), nil
+}
+
+func (r *FakeRepository) List(_ context.Context, filter problem.ListFilter) ([]problem.Problem, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	result := r.filtered(filter)
 
 	pageSize := filter.PageSize
 	if pageSize <= 0 {
@@ -133,6 +168,15 @@ func (r *FakeRepository) ListTestCases(_ context.Context, problemID string, samp
 func containsTag(tags []string, tag string) bool {
 	for _, t := range tags {
 		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCompany(tags []problem.CompanyTagSummary, company string) bool {
+	for _, t := range tags {
+		if strings.EqualFold(t.Company, company) {
 			return true
 		}
 	}

@@ -68,6 +68,7 @@ func (pc *ProblemController) ListProblems(c *gin.Context) {
 		Difficulty: c.Query("difficulty"),
 		Tag:        c.Query("tag"),
 		Company:    c.Query("company"),
+		Search:     c.Query("search"),
 		Page:       page,
 		PageSize:   pageSize,
 	}
@@ -78,7 +79,20 @@ func (pc *ProblemController) ListProblems(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": problems})
+	// The total ignores pagination so the client can size its page controls.
+	total, err := pc.svc.Count(c.Request.Context(), filter)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to count problems"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":  true,
+		"data":     problems,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+	})
 }
 
 // GetProblem handles GET /api/problems/:slug (public).

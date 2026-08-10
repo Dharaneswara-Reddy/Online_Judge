@@ -15,6 +15,8 @@ import (
 	"github.com/toji339/online-judge/internal/middleware"
 	"github.com/toji339/online-judge/internal/problem"
 	"github.com/toji339/online-judge/internal/problem/mongorepo"
+	"github.com/toji339/online-judge/internal/submission"
+	submissionmongo "github.com/toji339/online-judge/internal/submission/mongorepo"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
@@ -92,15 +94,41 @@ func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
 	}
 
 	// 7. Mount submission routes (authenticated, synchronous for now)
+	submissionRepo := submissionmongo.New(db)
+	submissionSvc := submission.NewService(submissionRepo)
+
 	if sandbox != nil {
-		submissionController := controllers.NewSubmissionController(problemSvc, sandbox)
+		submissionController := controllers.NewSubmissionController(problemSvc, submissionSvc, sandbox)
+
 		submitGroup := router.Group("/api/problems")
 		submitGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
 		{
 			submitGroup.POST("/:slug/submit", submissionController.Submit)
 		}
+
+		submissionsGroup := router.Group("/api/submissions")
+		submissionsGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+		{
+			submissionsGroup.GET("/:id", submissionController.GetSubmission)
+		}
+
+		historyGroup := router.Group("/api/users/me")
+		historyGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+		{
+			historyGroup.GET("/submissions", submissionController.ListMySubmissions)
+		}
 	}
 
-	// 8. Return the configured router
+	// 8. Mount profile routes
+	userController := controllers.NewUserController(db, submissionSvc, problemSvc)
+	users := router.Group("/api/users")
+	users.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	{
+		users.GET("/me", userController.GetProfile)
+		users.PATCH("/me", userController.UpdateProfile)
+		users.GET("/me/stats", userController.GetStats)
+	}
+
+	// 9. Return the configured router
 	return router
 }

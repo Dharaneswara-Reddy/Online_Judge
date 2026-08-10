@@ -70,8 +70,37 @@ func (s *Service) GetByID(ctx context.Context, id string) (*Problem, error) {
 	return s.repo.GetByID(ctx, id)
 }
 
+func (s *Service) GetByIDs(ctx context.Context, ids []string) ([]Problem, error) {
+	if len(ids) == 0 {
+		return []Problem{}, nil
+	}
+	return s.repo.GetByIDs(ctx, ids)
+}
+
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]Problem, error) {
 	return s.repo.List(ctx, filter)
+}
+
+// Count returns the total number of problems matching the filter,
+// ignoring pagination, so clients can render page controls.
+func (s *Service) Count(ctx context.Context, filter ListFilter) (int, error) {
+	return s.repo.Count(ctx, filter)
+}
+
+// SolvedCountsByDifficulty turns a set of solved problem IDs into a
+// per-difficulty tally for the profile page. Difficulties with no solves
+// are still present with a zero count so the UI can render a stable set
+// of bars.
+func (s *Service) SolvedCountsByDifficulty(ctx context.Context, problemIDs []string) (map[Difficulty]int, error) {
+	counts := map[Difficulty]int{DifficultyEasy: 0, DifficultyMedium: 0, DifficultyHard: 0}
+	problems, err := s.GetByIDs(ctx, problemIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range problems {
+		counts[p.Difficulty]++
+	}
+	return counts, nil
 }
 
 func (s *Service) Update(ctx context.Context, id string, input CreateProblemInput) (*Problem, error) {

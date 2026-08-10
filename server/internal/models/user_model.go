@@ -139,6 +139,55 @@ func CreateUser(ctx context.Context, db *mongo.Database, input *RegisterInput) (
 	return user, nil
 }
 
+// ProfileUpdate holds the fields a user is allowed to change on their
+// own account. Role, email, and password are deliberately absent —
+// changing those needs its own audited flow.
+type ProfileUpdate struct {
+	FullName string `json:"full_name"`
+	DOB      string `json:"dob,omitempty"` // ISO 8601 date string (optional)
+}
+
+// UpdateUserProfile applies a ProfileUpdate to one user document and
+// returns the updated user.
+//
+// Only non-empty fields are written, so a partial PATCH leaves the
+// other fields untouched.
+func UpdateUserProfile(ctx context.Context, db *mongo.Database, id bson.ObjectID, update *ProfileUpdate) (*User, error) {
+	// Steps to follow while updating a profile
+	// ==========================================
+
+	// 1. Build the set of fields to change, skipping empty ones
+	set := bson.M{}
+	if update.FullName != "" {
+		set["full_name"] = update.FullName
+	}
+	if update.DOB != "" {
+		parsed, err := time.Parse("2006-01-02", update.DOB)
+		if err != nil {
+			return nil, fmt.Errorf("invalid date of birth format, expected YYYY-MM-DD: %w", err)
+		}
+		set["dob"] = parsed
+	}
+
+	// 2. Nothing to change — return the user as-is rather than erroring
+	if len(set) == 0 {
+		return FindUserByID(ctx, db, id)
+	}
+
+	// 3. Apply the update
+	collection := db.Collection("users")
+	result, err := collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": set})
+	if err != nil {
+		return nil, fmt.Errorf("failed to update user: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return nil, fmt.Errorf("user not found")
+	}
+
+	// 4. Return the fresh document
+	return FindUserByID(ctx, db, id)
+}
+
 // FindUserByEmail looks up a user by their email address.
 // Returns the full user document (including password hash)
 // so the caller can verify credentials.

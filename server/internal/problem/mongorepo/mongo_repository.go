@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 
 	"github.com/toji339/online-judge/internal/problem"
 
@@ -65,7 +66,38 @@ func (r *MongoRepository) GetByID(ctx context.Context, id string) (*problem.Prob
 	return &p, nil
 }
 
-func (r *MongoRepository) List(ctx context.Context, filter problem.ListFilter) ([]problem.Problem, error) {
+// GetByIDs fetches every problem whose ID appears in ids. Malformed IDs
+// are skipped rather than failing the whole query.
+func (r *MongoRepository) GetByIDs(ctx context.Context, ids []string) ([]problem.Problem, error) {
+	oids := make([]bson.ObjectID, 0, len(ids))
+	for _, id := range ids {
+		if oid, err := bson.ObjectIDFromHex(id); err == nil {
+			oids = append(oids, oid)
+		}
+	}
+	if len(oids) == 0 {
+		return []problem.Problem{}, nil
+	}
+
+	cursor, err := r.problems.Find(ctx, bson.M{"_id": bson.M{"$in": oids}})
+	if err != nil {
+		return nil, fmt.Errorf("get problems by ids: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var problems []problem.Problem
+	if err := cursor.All(ctx, &problems); err != nil {
+		return nil, fmt.Errorf("decode problems: %w", err)
+	}
+	if problems == nil {
+		problems = []problem.Problem{}
+	}
+	return problems, nil
+}
+
+// listQuery builds the Mongo filter shared by List and Count so the two
+// can never drift apart and report inconsistent page counts.
+func listQuery(filter problem.ListFilter) bson.M {
 	query := bson.M{}
 	if filter.Difficulty != "" {
 		query["difficulty"] = filter.Difficulty
@@ -76,6 +108,25 @@ func (r *MongoRepository) List(ctx context.Context, filter problem.ListFilter) (
 	if filter.Company != "" {
 		query["company_tags.company"] = filter.Company
 	}
+	if filter.Search != "" {
+		// Anchored-free, case-insensitive title match. The input is quoted
+		// so regex metacharacters in a user's search are treated literally.
+		query["title"] = bson.M{"$regex": regexp.QuoteMeta(filter.Search), "$options": "i"}
+	}
+	return query
+}
+
+// Count returns how many problems match the filter, ignoring pagination.
+func (r *MongoRepository) Count(ctx context.Context, filter problem.ListFilter) (int, error) {
+	n, err := r.problems.CountDocuments(ctx, listQuery(filter))
+	if err != nil {
+		return 0, fmt.Errorf("count problems: %w", err)
+	}
+	return int(n), nil
+}
+
+func (r *MongoRepository) List(ctx context.Context, filter problem.ListFilter) ([]problem.Problem, error) {
+	query := listQuery(filter)
 
 	pageSize := int64(filter.PageSize)
 	if pageSize <= 0 {
