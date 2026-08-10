@@ -15,18 +15,29 @@ import (
 	"github.com/toji339/online-judge/internal/middleware"
 	"github.com/toji339/online-judge/internal/problem"
 	"github.com/toji339/online-judge/internal/problem/mongorepo"
+	"github.com/toji339/online-judge/internal/queue"
 	"github.com/toji339/online-judge/internal/submission"
 	submissionmongo "github.com/toji339/online-judge/internal/submission/mongorepo"
+	"github.com/toji339/online-judge/internal/worker"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
+// Deps holds the external services the API needs. Any of them may be nil,
+// and the router degrades accordingly rather than refusing to start:
+//
+//   - no Publisher: submissions are judged inline by the API process
+//   - no Sandbox:   code execution and inline judging are unavailable
+type Deps struct {
+	Publisher queue.Publisher
+}
+
 // Setup creates the Gin engine, configures CORS and all route
 // groups, and returns the engine ready to run.
 //
-// It accepts the MongoDB database reference and app config so
-// it can inject them into controllers without using globals.
-func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
+// It accepts the MongoDB database reference, app config, and external
+// dependencies so it can inject them into controllers without globals.
+func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	// 1. Create a new Gin engine with default middleware (logger, recovery)
 	router := gin.Default()
 
@@ -38,10 +49,12 @@ func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
 		AllowCredentials: true,
 	}))
 
-	// 3. Create controller instances with their dependencies
-	authController := controllers.NewAuthController(db, cfg.JWTSecret)
+	// 3. Create shared services
+	problemSvc := problem.NewService(mongorepo.New(db))
+	submissionSvc := submission.NewService(submissionmongo.New(db))
 
 	// 4. Mount the auth routes
+	authController := controllers.NewAuthController(db, cfg.JWTSecret)
 	auth := router.Group("/api/auth")
 	{
 		auth.POST("/register", authController.Register)
@@ -56,11 +69,14 @@ func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
 		}
 	}
 
-	// 5. Mount the judge (code execution) routes
+	// 5. Mount the judge (code execution) routes. The playground runs code
+	//    in-process, so it needs a sandbox on the API host; queued
+	//    submissions do not, since judge workers own their own sandbox.
 	var sandbox judge.Sandbox
 	sandbox, err := judge.NewDockerSandbox()
 	if err != nil {
-		log.Printf("WARNING: Docker sandbox unavailable: %v (code execution disabled)", err)
+		log.Printf("WARNING: Docker sandbox unavailable: %v (playground disabled)", err)
+		sandbox = nil
 	} else {
 		judgeController := controllers.NewJudgeController(sandbox)
 		judgeGroup := router.Group("/api/judge")
@@ -72,8 +88,6 @@ func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
 	}
 
 	// 6. Mount problem routes
-	problemRepo := mongorepo.New(db)
-	problemSvc := problem.NewService(problemRepo)
 	problemController := controllers.NewProblemController(problemSvc)
 
 	// Public problem routes — no auth required
@@ -83,8 +97,13 @@ func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
 		publicProblems.GET("/:slug", problemController.GetProblem)
 	}
 
-	// Admin-only problem routes — require auth + admin role
-	adminProblems := router.Group("/api/problems")
+	// Admin-only problem routes — require auth + admin role.
+	//
+	// These live under /api/admin rather than /api/problems for two
+	// reasons: it is the layout the design document specifies, and Gin
+	// cannot register both /api/problems/:slug and /api/problems/:id
+	// because two different wildcard names cannot share a position.
+	adminProblems := router.Group("/api/admin/problems")
 	adminProblems.Use(middleware.AuthMiddleware(cfg.JWTSecret), middleware.AdminOnly())
 	{
 		adminProblems.POST("", problemController.CreateProblem)
@@ -93,30 +112,28 @@ func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
 		adminProblems.GET("/:id/testcases", problemController.ListTestCases)
 	}
 
-	// 7. Mount submission routes (authenticated, synchronous for now)
-	submissionRepo := submissionmongo.New(db)
-	submissionSvc := submission.NewService(submissionRepo)
-
+	// 7. Mount submission routes. Submissions are queued for judge workers
+	//    when a broker is available, and judged inline otherwise.
+	var inlineProcessor *worker.Processor
 	if sandbox != nil {
-		submissionController := controllers.NewSubmissionController(problemSvc, submissionSvc, sandbox)
+		inlineProcessor = worker.NewProcessor(submissionSvc, problemSvc, sandbox, nil)
+	}
+	if deps.Publisher == nil && inlineProcessor == nil {
+		log.Println("WARNING: no queue and no sandbox — submissions cannot be judged")
+	}
 
-		submitGroup := router.Group("/api/problems")
-		submitGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
-		{
-			submitGroup.POST("/:slug/submit", submissionController.Submit)
-		}
+	submissionController := controllers.NewSubmissionController(problemSvc, submissionSvc, deps.Publisher, inlineProcessor)
 
-		submissionsGroup := router.Group("/api/submissions")
-		submissionsGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
-		{
-			submissionsGroup.GET("/:id", submissionController.GetSubmission)
-		}
+	submitGroup := router.Group("/api/problems")
+	submitGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	{
+		submitGroup.POST("/:slug/submit", submissionController.Submit)
+	}
 
-		historyGroup := router.Group("/api/users/me")
-		historyGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
-		{
-			historyGroup.GET("/submissions", submissionController.ListMySubmissions)
-		}
+	submissions := router.Group("/api/submissions")
+	submissions.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	{
+		submissions.GET("/:id", submissionController.GetSubmission)
 	}
 
 	// 8. Mount profile routes
@@ -127,6 +144,7 @@ func Setup(db *mongo.Database, cfg *config.Config) *gin.Engine {
 		users.GET("/me", userController.GetProfile)
 		users.PATCH("/me", userController.UpdateProfile)
 		users.GET("/me/stats", userController.GetStats)
+		users.GET("/me/submissions", submissionController.ListMySubmissions)
 	}
 
 	// 9. Return the configured router

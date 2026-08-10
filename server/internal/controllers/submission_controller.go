@@ -9,41 +9,47 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/toji339/online-judge/internal/judge"
 	"github.com/toji339/online-judge/internal/problem"
+	"github.com/toji339/online-judge/internal/queue"
 	"github.com/toji339/online-judge/internal/submission"
+	"github.com/toji339/online-judge/internal/worker"
 )
 
-// judgeTimeout bounds one full evaluation (compile plus every test case)
-// independently of the per-run limits enforced inside the sandbox.
-const judgeTimeout = 60 * time.Second
-
-// SubmissionController handles user code submissions against problems and
-// serves the resulting submission records back to the user.
+// SubmissionController accepts user code submissions, hands them to the
+// judging pipeline, and serves the resulting records back to the user.
 type SubmissionController struct {
 	problemSvc    *problem.Service
 	submissionSvc *submission.Service
-	judgeEngine   *judge.Judge
+
+	// publisher is nil when the broker is unreachable, in which case the
+	// controller judges inline rather than rejecting the submission.
+	publisher queue.Publisher
+	processor *worker.Processor
 }
 
-// NewSubmissionController creates a controller for evaluating submissions.
-func NewSubmissionController(problemSvc *problem.Service, submissionSvc *submission.Service, sandbox judge.Sandbox) *SubmissionController {
+// NewSubmissionController creates a controller for handling submissions.
+// A nil publisher selects the inline (synchronous) judging fallback.
+func NewSubmissionController(problemSvc *problem.Service, submissionSvc *submission.Service, publisher queue.Publisher, processor *worker.Processor) *SubmissionController {
 	return &SubmissionController{
 		problemSvc:    problemSvc,
 		submissionSvc: submissionSvc,
-		judgeEngine:   judge.NewJudge(sandbox),
+		publisher:     publisher,
+		processor:     processor,
 	}
 }
 
 // Submit handles POST /api/problems/:slug/submit (authenticated).
 //
-// It records the attempt as a pending submission, judges it against ALL
-// test cases (including hidden ones), and writes the verdict back to the
-// record. The verdict is derived entirely on the server — nothing in the
-// request body can influence it.
+// It records the attempt as a pending submission and queues it for a
+// judge worker, returning 202 immediately so a burst of submissions
+// never ties up API capacity. The client then polls
+// GET /api/submissions/:id for the verdict.
+//
+// Nothing in the request body can influence the verdict — the judge
+// reads the stored submission, and only the worker writes a status.
 func (sc *SubmissionController) Submit(c *gin.Context) {
-	// Steps to follow while handling a submission
-	// =============================================
+	// Steps to follow while accepting a submission
+	// ==============================================
 
 	// 1. Read the request body and the authenticated user
 	var body struct {
@@ -67,8 +73,8 @@ func (sc *SubmissionController) Submit(c *gin.Context) {
 		return
 	}
 
-	// 3. Record the attempt. This also runs validation and admission
-	//    control, so it must happen before any expensive work.
+	// 3. Record the attempt. This runs validation and admission control,
+	//    so it must happen before any expensive work is scheduled.
 	sub, err := sc.submissionSvc.Create(c.Request.Context(), submission.CreateInput{
 		UserID:       userID,
 		ProblemID:    p.ID,
@@ -82,90 +88,77 @@ func (sc *SubmissionController) Submit(c *gin.Context) {
 		return
 	}
 
-	// 4. Fetch ALL test cases (including hidden) for judging
-	allCases, err := sc.problemSvc.ListAllTestCases(c.Request.Context(), p.ID)
-	if err != nil {
-		sc.failSubmission(sub.ID, "could not load test cases")
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to fetch test cases"})
-		return
-	}
-	if len(allCases) == 0 {
-		sc.failSubmission(sub.ID, "problem has no test cases")
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "No test cases found for this problem"})
-		return
-	}
-
-	// 5. Evaluate it, then persist the verdict
-	result, err := sc.evaluate(c.Request.Context(), sub, p, allCases)
-	if err != nil {
-		sc.failSubmission(sub.ID, "execution engine error")
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Execution engine error", "details": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success":      true,
-		"submissionId": sub.ID,
-		"status":       result.Status,
-		"verdict":      result.Status, // retained for the existing client
-		"runtimeMs":    result.RuntimeMS,
-		"memoryKb":     result.MemoryKB,
-		"failedCase":   result.FailedCase,
-		"compileError": result.CompileError,
-		"totalCases":   len(allCases),
-	})
+	// 4. Hand it to the judging pipeline
+	sc.dispatch(c, sub)
 }
 
-// evaluate runs the judge and records the outcome on the submission.
-func (sc *SubmissionController) evaluate(ctx context.Context, sub *submission.Submission, p *problem.Problem, cases []problem.TestCase) (submission.Result, error) {
-	judgeCases := make([]judge.TestCase, len(cases))
-	for i, tc := range cases {
-		judgeCases[i] = judge.TestCase{Input: tc.Input, ExpectedOutput: tc.ExpectedOutput}
+// dispatch queues the submission, falling back to judging it inline when
+// no broker is available so the platform still works on a bare machine.
+func (sc *SubmissionController) dispatch(c *gin.Context, sub *submission.Submission) {
+	job := queue.Job{
+		SubmissionID: sub.ID,
+		UserID:       sub.UserID,
+		ProblemID:    sub.ProblemID,
+		WarRoomID:    sub.WarRoomID,
 	}
 
-	limits := judge.Limits{
-		TimeLimit:     time.Duration(p.TimeLimitMS) * time.Millisecond,
-		MemoryLimitMB: int64(p.MemoryLimitMB),
+	if sc.publisher != nil {
+		err := sc.publisher.Publish(c.Request.Context(), queue.LaneFor(sub.WarRoomID), job)
+		switch {
+		case err != nil && sc.processor == nil:
+			// Nothing can judge this submission — say so instead of
+			// leaving the user staring at a permanently pending verdict.
+			log.Printf("ERROR: could not queue submission %s and no inline judge is available: %v", sub.ID, err)
+			sc.failAndReport(c, sub, "The judging service is currently unavailable")
+			return
+		case err != nil:
+			log.Printf("WARNING: could not queue submission %s, judging inline: %v", sub.ID, err)
+		default:
+			c.JSON(http.StatusAccepted, gin.H{
+				"success":      true,
+				"message":      "Submission queued for judging",
+				"submissionId": sub.ID,
+				"status":       submission.StatusPending,
+			})
+			return
+		}
 	}
 
-	if err := sc.submissionSvc.MarkRunning(ctx, sub.ID); err != nil {
-		return submission.Result{}, err
+	// No broker at all and no inline judge either.
+	if sc.processor == nil {
+		sc.failAndReport(c, sub, "The judging service is currently unavailable")
+		return
 	}
 
-	judgeCtx, cancel := context.WithTimeout(ctx, judgeTimeout)
+	// Inline fallback. Process records the verdict on the submission, so
+	// the response is built from the reloaded record either way.
+	if err := sc.processor.Process(c.Request.Context(), job); err != nil {
+		log.Printf("WARNING: inline judging of submission %s failed: %v", sub.ID, err)
+	}
+
+	judged, err := sc.submissionSvc.GetByID(c.Request.Context(), sub.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to load verdict"})
+		return
+	}
+	c.JSON(http.StatusOK, submissionResponse(judged))
+}
+
+// failAndReport clears a submission that can never be judged and tells
+// the caller the service is down, so nothing is left pending forever.
+func (sc *SubmissionController) failAndReport(c *gin.Context, sub *submission.Submission, message string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 5*time.Second)
 	defer cancel()
 
-	verdict, err := sc.judgeEngine.Evaluate(judgeCtx, sub.Language, sub.Code, judgeCases, limits)
-	if err != nil {
-		return submission.Result{}, err
+	if err := sc.submissionSvc.MarkFailed(ctx, sub.ID, message); err != nil {
+		log.Printf("WARNING: could not mark submission %s as failed: %v", sub.ID, err)
 	}
-
-	result := submission.Result{
-		Status:       submission.StatusFromVerdict(verdict.Verdict),
-		RuntimeMS:    verdict.RuntimeMS,
-		MemoryKB:     verdict.MemoryKB,
-		FailedCase:   verdict.FailedCase,
-		CompileError: verdict.CompileError,
-	}
-	if err := sc.submissionSvc.MarkJudged(ctx, sub.ID, result); err != nil {
-		return submission.Result{}, err
-	}
-	return result, nil
+	c.JSON(http.StatusServiceUnavailable, gin.H{"success": false, "message": message, "submissionId": sub.ID})
 }
 
-// failSubmission clears a stuck submission after an infrastructure error.
-// It uses a fresh context because the request context may already be done.
-func (sc *SubmissionController) failSubmission(id, reason string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := sc.submissionSvc.MarkFailed(ctx, id, reason); err != nil {
-		log.Printf("WARNING: could not mark submission %s as failed: %v", id, err)
-	}
-}
-
-// GetSubmission handles GET /api/submissions/:id (authenticated).
-// A user may only read their own submissions, since the record contains
-// their source code.
+// GetSubmission handles GET /api/submissions/:id (authenticated) and is
+// what the client polls while a verdict is pending. A user may only read
+// their own submissions, since the record contains their source code.
 func (sc *SubmissionController) GetSubmission(c *gin.Context) {
 	sub, err := sc.submissionSvc.GetByID(c.Request.Context(), c.Param("id"))
 	if err != nil {
@@ -182,7 +175,9 @@ func (sc *SubmissionController) GetSubmission(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": sub})
+	response := submissionResponse(sub)
+	response["data"] = sub
+	c.JSON(http.StatusOK, response)
 }
 
 // ListMySubmissions handles GET /api/users/me/submissions (authenticated),
@@ -226,6 +221,22 @@ func (sc *SubmissionController) ListMySubmissions(c *gin.Context) {
 		"page":     page,
 		"pageSize": pageSize,
 	})
+}
+
+// submissionResponse renders one submission in the flat shape the code
+// editor's verdict panel consumes.
+func submissionResponse(sub *submission.Submission) gin.H {
+	return gin.H{
+		"success":      true,
+		"submissionId": sub.ID,
+		"status":       sub.Status,
+		"verdict":      sub.Status, // retained for the existing client
+		"runtimeMs":    sub.RuntimeMS,
+		"memoryKb":     sub.MemoryKB,
+		"failedCase":   sub.FailedCase,
+		"totalCases":   sub.TotalCases,
+		"compileError": sub.CompileError,
+	}
 }
 
 // writeSubmissionError maps submission service errors to HTTP responses.

@@ -261,6 +261,23 @@
   opacity: 0.85;
 }
 
+/* Shown while a submission is queued or being judged, before a verdict
+   exists. Muted on purpose so it never reads as a result. */
+.verdict-pending {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary, #9aa4b2);
+  border-left: 3px solid var(--text-secondary, #9aa4b2);
+}
+
+.verdict-pending .pd-verdict-icon {
+  animation: verdict-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes verdict-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
 .verdict-accepted {
   background: rgba(62, 207, 142, 0.1);
   color: var(--success);

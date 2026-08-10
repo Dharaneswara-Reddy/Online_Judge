@@ -320,11 +320,11 @@ func (ac *AuthController) GetMe(c *gin.Context) {
 func (ac *AuthController) generateJWT(user *models.User) (string, error) {
 	// Define the claims for the token
 	claims := jwt.MapClaims{
-		"sub":      user.ID.Hex(),  // Subject — the user's MongoDB ObjectID
-		"username": user.Username,  // Username for quick access without DB lookup
-		"role":     user.Role,      // Role for authorization checks
+		"sub":      user.ID.Hex(),                         // Subject — the user's MongoDB ObjectID
+		"username": user.Username,                         // Username for quick access without DB lookup
+		"role":     user.Role,                             // Role for authorization checks
 		"exp":      time.Now().Add(24 * time.Hour).Unix(), // Expires in 24 hours
-		"iat":      time.Now().Unix(), // Issued at
+		"iat":      time.Now().Unix(),                     // Issued at
 	}
 
 	// Create and sign the token with the JWT secret

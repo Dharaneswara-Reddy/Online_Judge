@@ -11,6 +11,7 @@ import (
 
 	"github.com/toji339/online-judge/internal/config"
 	"github.com/toji339/online-judge/internal/database"
+	"github.com/toji339/online-judge/internal/queue/rabbitmq"
 	"github.com/toji339/online-judge/internal/routes"
 )
 
@@ -37,10 +38,24 @@ func main() {
 		log.Fatalf("FATAL: Could not create database indexes: %v", err)
 	}
 
-	// 5. Set up the Gin router with all routes and middleware
-	router := routes.Setup(db, cfg)
+	// 5. Connect to the submission queue. This is optional: without a
+	//    broker the API judges submissions inline instead of refusing
+	//    them, which keeps local development working with no extra setup.
+	var deps routes.Deps
+	broker, err := rabbitmq.Connect(cfg.RabbitMQURL)
+	if err != nil {
+		log.Printf("WARNING: submission queue unavailable (%v) — judging inline. "+
+			"Start it with: docker compose up -d", err)
+	} else {
+		defer broker.Close()
+		deps.Publisher = broker
+		log.Println("Connected to the submission queue")
+	}
 
-	// 6. Start the HTTP server on the configured port
+	// 6. Set up the Gin router with all routes and middleware
+	router := routes.Setup(db, cfg, deps)
+
+	// 7. Start the HTTP server on the configured port
 	log.Printf("Server starting on port %s", cfg.Port)
 	if err := router.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("FATAL: Server failed to start: %v", err)

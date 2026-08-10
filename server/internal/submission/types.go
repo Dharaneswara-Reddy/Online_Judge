@@ -73,11 +73,14 @@ type ListFilter struct {
 }
 
 // Result carries the judge's outcome back into the submission record.
+// TotalCases is how many test cases the problem had at judging time, so
+// the UI can render "failed on case 3 of 12".
 type Result struct {
 	Status       Status
 	RuntimeMS    int64
 	MemoryKB     int64
 	FailedCase   int
+	TotalCases   int
 	CompileError string
 }
 

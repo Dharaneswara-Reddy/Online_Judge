@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +19,10 @@ import (
 	"github.com/toji339/online-judge/internal/judge"
 	"github.com/toji339/online-judge/internal/problem"
 	problemmongo "github.com/toji339/online-judge/internal/problem/mongorepo"
+	"github.com/toji339/online-judge/internal/queue"
 	"github.com/toji339/online-judge/internal/submission"
 	submissionmongo "github.com/toji339/online-judge/internal/submission/mongorepo"
+	"github.com/toji339/online-judge/internal/worker"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
@@ -83,9 +86,34 @@ type submissionHarness struct {
 	userID        string
 }
 
+// capturingPublisher records the jobs the controller queues instead of
+// talking to a real broker.
+type capturingPublisher struct {
+	jobs  []queue.Job
+	lanes []queue.Lane
+	err   error
+}
+
+func (p *capturingPublisher) Publish(_ context.Context, lane queue.Lane, job queue.Job) error {
+	if p.err != nil {
+		return p.err
+	}
+	p.lanes = append(p.lanes, lane)
+	p.jobs = append(p.jobs, job)
+	return nil
+}
+
+func (p *capturingPublisher) Close() error { return nil }
+
 // setupSubmissionRouter mounts the submission and profile routes with a
 // stub authentication layer, so tests control which user is calling.
+// Passing a nil publisher exercises the inline judging fallback.
 func setupSubmissionRouter(t *testing.T, sandbox judge.Sandbox) *submissionHarness {
+	t.Helper()
+	return setupSubmissionRouterWithQueue(t, sandbox, nil)
+}
+
+func setupSubmissionRouterWithQueue(t *testing.T, sandbox judge.Sandbox, publisher queue.Publisher) *submissionHarness {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -102,7 +130,8 @@ func setupSubmissionRouter(t *testing.T, sandbox judge.Sandbox) *submissionHarne
 		c.Next()
 	})
 
-	submissionController := controllers.NewSubmissionController(problemSvc, submissionSvc, sandbox)
+	processor := worker.NewProcessor(submissionSvc, problemSvc, sandbox, nil)
+	submissionController := controllers.NewSubmissionController(problemSvc, submissionSvc, publisher, processor)
 	userController := controllers.NewUserController(testDB, submissionSvc, problemSvc)
 
 	router.POST("/api/problems/:slug/submit", submissionController.Submit)
@@ -209,6 +238,67 @@ func TestSubmit_WrongAnswerIsPersisted(t *testing.T) {
 	assert.Equal(t, 0, resp.FailedCase)
 }
 
+// TestSubmit_QueuesInsteadOfJudgingInline covers the production path:
+// with a broker available the API accepts the work and returns at once.
+func TestSubmit_QueuesInsteadOfJudgingInline(t *testing.T) {
+	clearSubmissions(t)
+	publisher := &capturingPublisher{}
+	h := setupSubmissionRouterWithQueue(t, acceptingSandbox(), publisher)
+	p := seedProblem(t, h.problemSvc)
+
+	w := postSubmit(t, h, p.Slug, `{"language":"python","code":"print(3)"}`)
+
+	require.Equal(t, http.StatusAccepted, w.Code, w.Body.String())
+
+	var resp struct {
+		SubmissionID string `json:"submissionId"`
+		Status       string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "pending", resp.Status, "the verdict is not known yet")
+
+	require.Len(t, publisher.jobs, 1, "the job reaches the broker")
+	assert.Equal(t, resp.SubmissionID, publisher.jobs[0].SubmissionID)
+	assert.Equal(t, queue.LaneStandard, publisher.lanes[0],
+		"practice submissions use the standard lane")
+
+	// The record exists and is waiting for a worker.
+	stored, err := h.submissionSvc.GetByID(context.Background(), resp.SubmissionID)
+	require.NoError(t, err)
+	assert.Equal(t, submission.StatusPending, stored.Status)
+}
+
+// TestSubmit_FallsBackToInlineJudgingWhenBrokerFails keeps the platform
+// usable when RabbitMQ is down.
+func TestSubmit_FallsBackToInlineJudgingWhenBrokerFails(t *testing.T) {
+	clearSubmissions(t)
+	publisher := &capturingPublisher{err: errors.New("broker is down")}
+	h := setupSubmissionRouterWithQueue(t, acceptingSandbox(), publisher)
+	p := seedProblem(t, h.problemSvc)
+
+	w := postSubmit(t, h, p.Slug, `{"language":"python","code":"print(3)"}`)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var resp struct {
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "accepted", resp.Status, "the submission is judged inline instead")
+}
+
+// TestSubmit_RejectsSecondPendingSubmission verifies admission control
+// through the HTTP layer: a queued submission blocks the next one.
+func TestSubmit_RejectsSecondPendingSubmission(t *testing.T) {
+	clearSubmissions(t)
+	h := setupSubmissionRouterWithQueue(t, acceptingSandbox(), &capturingPublisher{})
+	p := seedProblem(t, h.problemSvc)
+
+	require.Equal(t, http.StatusAccepted, postSubmit(t, h, p.Slug, `{"language":"python","code":"print(3)"}`).Code)
+	w := postSubmit(t, h, p.Slug, `{"language":"python","code":"print(3)"}`)
+
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+}
+
 // TestSubmit_RejectsUnsupportedLanguage is the validation-failure case.
 func TestSubmit_RejectsUnsupportedLanguage(t *testing.T) {
 	clearSubmissions(t)
@@ -230,9 +320,13 @@ func TestSubmit_UnknownProblemReturns404(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
-// TestSubmit_ProblemWithoutTestCasesIsRejected guards the judge against
-// silently accepting anything when a problem has no cases.
-func TestSubmit_ProblemWithoutTestCasesIsRejected(t *testing.T) {
+// TestSubmit_ProblemWithoutTestCasesNeverReportsAccepted guards the judge
+// against silently accepting anything when a problem has no cases.
+//
+// The check lives in the judging pipeline rather than the HTTP handler,
+// because in production the worker — not the API — loads the test cases.
+// The submission therefore ends in a terminal non-accepted state.
+func TestSubmit_ProblemWithoutTestCasesNeverReportsAccepted(t *testing.T) {
 	clearSubmissions(t)
 	h := setupSubmissionRouter(t, acceptingSandbox())
 	p, err := h.problemSvc.Create(context.Background(), problem.CreateProblemInput{
@@ -242,10 +336,15 @@ func TestSubmit_ProblemWithoutTestCasesIsRejected(t *testing.T) {
 	require.NoError(t, err)
 
 	w := postSubmit(t, h, p.Slug, `{"language":"python","code":"print(3)"}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var resp struct {
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.NotEqual(t, "accepted", resp.Status, "an untested solution must never be accepted")
 
-	// The rejected attempt must not be left pending forever.
+	// The attempt must not be left pending forever either.
 	items, err := h.submissionSvc.List(context.Background(), submission.ListFilter{UserID: h.userID})
 	require.NoError(t, err)
 	require.Len(t, items, 1)

@@ -117,6 +117,7 @@ func (r *FakeRepository) UpdateStatus(_ context.Context, id string, status submi
 		s.RuntimeMS = result.RuntimeMS
 		s.MemoryKB = result.MemoryKB
 		s.FailedCase = result.FailedCase
+		s.TotalCases = result.TotalCases
 		s.CompileError = result.CompileError
 	}
 	if status.IsTerminal() {

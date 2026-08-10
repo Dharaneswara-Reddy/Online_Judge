@@ -8,6 +8,7 @@ package config
 import (
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -15,11 +16,14 @@ import (
 // Config holds all the environment variables the application needs.
 // Each field maps to one variable in the .env file.
 type Config struct {
-	MongoURI  string // MongoDB Atlas connection string
-	DBName    string // Database name on the Atlas cluster
-	JWTSecret string // Secret key used to sign and verify JWT tokens
-	Port      string // Port the HTTP server listens on
-	ClientURL string // Frontend origin for CORS (e.g. http://localhost:5173)
+	MongoURI    string // MongoDB Atlas connection string
+	DBName      string // Database name on the Atlas cluster
+	JWTSecret   string // Secret key used to sign and verify JWT tokens
+	Port        string // Port the HTTP server listens on
+	ClientURL   string // Frontend origin for CORS (e.g. http://localhost:5173)
+	RabbitMQURL string // AMQP URL for the submission queue
+	RedisURL    string // Redis URL for caching, rate limits and pub/sub
+	WorkerCount int    // Concurrent judge slots per worker process
 }
 
 // Load reads the .env file and returns a populated Config struct.
@@ -42,6 +46,12 @@ func Load() *Config {
 		JWTSecret: getEnvOrPanic("JWT_SECRET"),
 		Port:      getEnvOrDefault("PORT", "8080"),
 		ClientURL: getEnvOrDefault("CLIENT_URL", "http://localhost:5173"),
+		// Queue and cache default to the local docker-compose services.
+		// They are not required: the API degrades to synchronous judging
+		// and an uncached read path when they are unreachable.
+		RabbitMQURL: getEnvOrDefault("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+		RedisURL:    getEnvOrDefault("REDIS_URL", "redis://localhost:6379/0"),
+		WorkerCount: getEnvAsIntOrDefault("WORKER_COUNT", 4),
 	}
 
 	// 3. Return the validated config
@@ -58,6 +68,21 @@ func getEnvOrPanic(key string) string {
 		log.Fatalf("FATAL: Required environment variable %s is not set", key)
 	}
 	return value
+}
+
+// getEnvAsIntOrDefault reads an environment variable and parses it as an
+// integer, falling back to the default when unset or unparseable.
+func getEnvAsIntOrDefault(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		log.Printf("Warning: %s=%q is not a positive integer, using %d", key, value, defaultValue)
+		return defaultValue
+	}
+	return parsed
 }
 
 // getEnvOrDefault reads an environment variable by key.

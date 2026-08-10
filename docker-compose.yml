@@ -1,0 +1,41 @@
+# Local development infrastructure for the Online Judge.
+#
+# MongoDB is not included on purpose — the project uses MongoDB Atlas,
+# as required by the coding constitution.
+#
+#   docker compose up -d      start RabbitMQ and Redis
+#   docker compose down       stop them (data is discarded)
+#
+# RabbitMQ's management UI is at http://localhost:15672 (guest/guest).
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: oj-rabbitmq
+    ports:
+      - "5672:5672"   # AMQP — the API and judge workers connect here
+      - "15672:15672" # management UI, handy for watching queue depth
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: oj-redis
+    ports:
+      - "6379:6379"
+    # Cache and ephemeral War Room state only — nothing here needs to
+    # survive a restart, so persistence stays off.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped

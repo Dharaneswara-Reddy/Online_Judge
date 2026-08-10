@@ -116,6 +116,7 @@ func (r *MongoRepository) UpdateStatus(ctx context.Context, id string, status su
 		set["runtime_ms"] = result.RuntimeMS
 		set["memory_kb"] = result.MemoryKB
 		set["failed_case"] = result.FailedCase
+		set["total_cases"] = result.TotalCases
 		set["compile_error"] = result.CompileError
 	}
 	// judged_at is stamped server-side, never taken from a client.

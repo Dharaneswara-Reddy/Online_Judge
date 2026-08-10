@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { fetchProblem } from "../api/problems";
-import { submitSolution } from "../api/submissions";
+import { submitSolution, pollSubmission, isTerminalStatus } from "../api/submissions";
 import { runCode } from "../api/judge";
 import CodeEditor from "../components/editor/CodeEditor";
 import LanguageSelector from "../components/editor/LanguageSelector";
@@ -13,6 +13,9 @@ import "./ProblemDetail.css";
 const DIFFICULTY_CLASS = { easy: "badge-easy", medium: "badge-medium", hard: "badge-hard" };
 
 const VERDICT_DISPLAY = {
+  // Transient states, shown while the submission waits for a judge worker.
+  pending: { label: "Queued", class: "verdict-pending", icon: "⋯" },
+  running: { label: "Judging", class: "verdict-pending", icon: "⋯" },
   accepted: { label: "Accepted", class: "verdict-accepted", icon: "✓" },
   wrong_answer: { label: "Wrong Answer", class: "verdict-wa", icon: "✗" },
   tle: { label: "Time Limit Exceeded", class: "verdict-tle", icon: "⏱" },
@@ -104,7 +107,9 @@ export default function ProblemDetail() {
     }
   };
 
-  // Submit — uses /api/problems/:slug/submit
+  // Submit — queues the solution, then polls until the judge decides.
+  // The API returns as soon as the attempt is recorded, so a verdict
+  // arrives on a later poll rather than in the POST response.
   const handleSubmit = async () => {
     if (isRunning || isSubmitting) return;
     setIsSubmitting(true);
@@ -112,10 +117,20 @@ export default function ProblemDetail() {
     setRunResult(null);
     setActiveTab("output");
     try {
-      const data = await submitSolution({ slug, language, code });
-      setSubmitResult(data);
+      const queued = await submitSolution({ slug, language, code });
+      setSubmitResult(queued);
+
+      if (queued.submissionId && !isTerminalStatus(queued.status)) {
+        const final = await pollSubmission(queued.submissionId, {
+          onUpdate: setSubmitResult,
+        });
+        setSubmitResult(final);
+      }
     } catch (err) {
-      setSubmitResult({ verdict: "compile_error", compileError: err?.response?.data?.message ?? "Submission failed." });
+      setSubmitResult({
+        status: "runtime_error",
+        compileError: err?.response?.data?.message ?? "Submission failed.",
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -140,7 +155,7 @@ export default function ProblemDetail() {
     );
   }
 
-  const verdictInfo = submitResult ? VERDICT_DISPLAY[submitResult.verdict] : null;
+  const verdictInfo = submitResult ? VERDICT_DISPLAY[submitResult.status] : null;
 
   return (
     <div className="pd-page">
@@ -245,25 +260,25 @@ export default function ProblemDetail() {
             <div className={`pd-verdict-banner ${verdictInfo.class}`}>
               <span className="pd-verdict-icon">{verdictInfo.icon}</span>
               <span className="pd-verdict-label">{verdictInfo.label}</span>
-              {submitResult.verdict === "accepted" && (
+              {submitResult.status === "accepted" && (
                 <span className="pd-verdict-detail">
                   All {submitResult.totalCases} test cases passed • {submitResult.runtimeMs}ms
                 </span>
               )}
-              {submitResult.verdict === "wrong_answer" && (
+              {submitResult.status === "wrong_answer" && (
                 <span className="pd-verdict-detail">
                   Failed on test case {submitResult.failedCase + 1} of {submitResult.totalCases}
                 </span>
               )}
-              {submitResult.verdict === "tle" && (
+              {submitResult.status === "tle" && (
                 <span className="pd-verdict-detail">
                   Exceeded time limit on test case {submitResult.failedCase + 1}
                 </span>
               )}
-              {submitResult.verdict === "compile_error" && (
+              {submitResult.status === "compile_error" && (
                 <span className="pd-verdict-detail">{submitResult.compileError}</span>
               )}
-              {submitResult.verdict === "runtime_error" && (
+              {submitResult.status === "runtime_error" && (
                 <span className="pd-verdict-detail">
                   Runtime error on test case {submitResult.failedCase + 1}
                 </span>
