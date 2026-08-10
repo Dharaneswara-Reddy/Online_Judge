@@ -26,8 +26,18 @@ func Connect(uri string) (*mongo.Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 2. Connect to MongoDB using the provided URI
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	// 2. Connect to MongoDB using the provided URI.
+	//
+	//    ObjectIDAsHexString lets documents whose _id is an ObjectID
+	//    decode into a plain Go string field. Domain types such as
+	//    problem.Problem and submission.Submission model their ID as a
+	//    string so the domain packages stay free of driver types; without
+	//    this option every read of those collections fails to decode.
+	clientOpts := options.Client().
+		ApplyURI(uri).
+		SetBSONOptions(&options.BSONOptions{ObjectIDAsHexString: true})
+
+	client, err := mongo.Connect(clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
@@ -130,6 +140,36 @@ func EnsureIndexes(db *mongo.Database) error {
 		return fmt.Errorf("failed to create test case indexes: %w", err)
 	}
 	log.Println("Test case indexes created successfully")
+
+	// --- Submission collection indexes ---
+	// The compound user/time index backs the submission history page,
+	// while the room index backs War Room winner lookups.
+	submissionsColl := db.Collection("submissions")
+	submissionIndexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: "user_id", Value: 1},
+				{Key: "submitted_at", Value: -1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "problem_id", Value: 1},
+				{Key: "status", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "war_room_id", Value: 1},
+				{Key: "judged_at", Value: 1},
+			},
+		},
+	}
+	_, err = submissionsColl.Indexes().CreateMany(ctx, submissionIndexes)
+	if err != nil {
+		return fmt.Errorf("failed to create submission indexes: %w", err)
+	}
+	log.Println("Submission indexes created successfully")
 
 	return nil
 }
