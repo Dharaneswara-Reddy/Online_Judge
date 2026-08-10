@@ -26,3 +26,16 @@ Thumbs.db
 
 # PDF (design doc — not source code)
 *.pdf
+
+# AI / agent tooling
+CLAUDE.md
+.agent/
+.claude/
+.claude-*/
+.cursor/
+.aider*
+.windsurfrules
+.github/copilot-instructions.md
+AGENTS.md
+GEMINI.md
+.mcp.json
