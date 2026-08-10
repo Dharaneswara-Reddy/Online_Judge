@@ -22,6 +22,8 @@ import (
 	"github.com/toji339/online-judge/internal/queue"
 	"github.com/toji339/online-judge/internal/submission"
 	submissionmongo "github.com/toji339/online-judge/internal/submission/mongorepo"
+	"github.com/toji339/online-judge/internal/warroom"
+	warroommongo "github.com/toji339/online-judge/internal/warroom/mongorepo"
 	"github.com/toji339/online-judge/internal/worker"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -131,7 +133,8 @@ func setupSubmissionRouterWithQueue(t *testing.T, sandbox judge.Sandbox, publish
 	})
 
 	processor := worker.NewProcessor(submissionSvc, problemSvc, sandbox, nil)
-	submissionController := controllers.NewSubmissionController(problemSvc, submissionSvc, publisher, processor)
+	warRoomSvc := warroom.NewService(warroommongo.New(testDB), problemSvc)
+	submissionController := controllers.NewSubmissionController(problemSvc, submissionSvc, publisher, processor, warRoomSvc)
 	userController := controllers.NewUserController(testDB, submissionSvc, problemSvc)
 
 	router.POST("/api/problems/:slug/submit", submissionController.Submit)

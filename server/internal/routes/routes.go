@@ -5,6 +5,7 @@ package routes
 
 import (
 	"log"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -16,8 +17,12 @@ import (
 	"github.com/toji339/online-judge/internal/problem"
 	"github.com/toji339/online-judge/internal/problem/mongorepo"
 	"github.com/toji339/online-judge/internal/queue"
+	"github.com/toji339/online-judge/internal/ratelimit"
+	"github.com/toji339/online-judge/internal/realtime"
 	"github.com/toji339/online-judge/internal/submission"
 	submissionmongo "github.com/toji339/online-judge/internal/submission/mongorepo"
+	"github.com/toji339/online-judge/internal/warroom"
+	warroommongo "github.com/toji339/online-judge/internal/warroom/mongorepo"
 	"github.com/toji339/online-judge/internal/worker"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -28,8 +33,25 @@ import (
 //
 //   - no Publisher: submissions are judged inline by the API process
 //   - no Sandbox:   code execution and inline judging are unavailable
+//   - no Bus:       War Room live updates fall back to in-process only
+//   - no Limiter:   rate limits are not enforced
 type Deps struct {
 	Publisher queue.Publisher
+	Bus       realtime.Bus
+	Limiter   ratelimit.Limiter
+}
+
+// withDefaults fills in safe no-op stand-ins so the rest of Setup never
+// has to nil-check an optional dependency.
+func (d Deps) withDefaults() Deps {
+	if d.Bus == nil {
+		// In-process fan-out still works for a single API instance.
+		d.Bus = realtime.NewMemoryBus()
+	}
+	if d.Limiter == nil {
+		d.Limiter = ratelimit.AllowAll{}
+	}
+	return d
 }
 
 // Setup creates the Gin engine, configures CORS and all route
@@ -38,6 +60,8 @@ type Deps struct {
 // It accepts the MongoDB database reference, app config, and external
 // dependencies so it can inject them into controllers without globals.
 func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
+	deps = deps.withDefaults()
+
 	// 1. Create a new Gin engine with default middleware (logger, recovery)
 	router := gin.Default()
 
@@ -52,6 +76,7 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	// 3. Create shared services
 	problemSvc := problem.NewService(mongorepo.New(db))
 	submissionSvc := submission.NewService(submissionmongo.New(db))
+	warRoomSvc := warroom.NewService(warroommongo.New(db), problemSvc)
 
 	// 4. Mount the auth routes
 	authController := controllers.NewAuthController(db, cfg.JWTSecret)
@@ -122,7 +147,7 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 		log.Println("WARNING: no queue and no sandbox — submissions cannot be judged")
 	}
 
-	submissionController := controllers.NewSubmissionController(problemSvc, submissionSvc, deps.Publisher, inlineProcessor)
+	submissionController := controllers.NewSubmissionController(problemSvc, submissionSvc, deps.Publisher, inlineProcessor, warRoomSvc)
 
 	submitGroup := router.Group("/api/problems")
 	submitGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
@@ -147,6 +172,25 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 		users.GET("/me/submissions", submissionController.ListMySubmissions)
 	}
 
-	// 9. Return the configured router
+	// 9. Mount War Room routes. The WebSocket sits outside /api because it
+	//    is not a REST endpoint, matching the design document's /ws prefix.
+	warRoomController := controllers.NewWarRoomController(warRoomSvc, deps.Bus, cfg.ClientURL)
+
+	warRooms := router.Group("/api/warrooms")
+	warRooms.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	{
+		warRooms.GET("", warRoomController.ListRooms)
+		warRooms.GET("/mine", warRoomController.ListMyRooms)
+		warRooms.GET("/:code", warRoomController.GetRoom)
+		// Creating a room is rate limited: rooms are cheap to make and a
+		// flood of them would clutter the lobby for everyone.
+		warRooms.POST("", middleware.RateLimit(deps.Limiter, "warroom-create", 10, time.Minute), warRoomController.CreateRoom)
+		warRooms.POST("/:code/join", warRoomController.JoinRoom)
+		warRooms.POST("/:code/submit", submissionController.SubmitToWarRoom)
+	}
+
+	router.GET("/ws/warroom/:code", middleware.AuthMiddleware(cfg.JWTSecret), warRoomController.Live)
+
+	// 10. Return the configured router
 	return router
 }

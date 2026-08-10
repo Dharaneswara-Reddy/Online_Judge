@@ -12,6 +12,7 @@ import (
 	"github.com/toji339/online-judge/internal/problem"
 	"github.com/toji339/online-judge/internal/queue"
 	"github.com/toji339/online-judge/internal/submission"
+	"github.com/toji339/online-judge/internal/warroom"
 	"github.com/toji339/online-judge/internal/worker"
 )
 
@@ -25,16 +26,20 @@ type SubmissionController struct {
 	// controller judges inline rather than rejecting the submission.
 	publisher queue.Publisher
 	processor *worker.Processor
+
+	// warRooms is nil when the War Room feature is not wired up.
+	warRooms *warroom.Service
 }
 
 // NewSubmissionController creates a controller for handling submissions.
 // A nil publisher selects the inline (synchronous) judging fallback.
-func NewSubmissionController(problemSvc *problem.Service, submissionSvc *submission.Service, publisher queue.Publisher, processor *worker.Processor) *SubmissionController {
+func NewSubmissionController(problemSvc *problem.Service, submissionSvc *submission.Service, publisher queue.Publisher, processor *worker.Processor, warRooms *warroom.Service) *SubmissionController {
 	return &SubmissionController{
 		problemSvc:    problemSvc,
 		submissionSvc: submissionSvc,
 		publisher:     publisher,
 		processor:     processor,
+		warRooms:      warRooms,
 	}
 }
 
@@ -89,6 +94,54 @@ func (sc *SubmissionController) Submit(c *gin.Context) {
 	}
 
 	// 4. Hand it to the judging pipeline
+	sc.dispatch(c, sub)
+}
+
+// SubmitToWarRoom handles POST /api/warrooms/:code/submit (authenticated).
+//
+// It behaves like Submit but tags the submission with the room, which
+// routes it to the dedicated high-priority judging lane so a live race is
+// never delayed by background practice traffic.
+func (sc *SubmissionController) SubmitToWarRoom(c *gin.Context) {
+	if sc.warRooms == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"success": false, "message": "War rooms are unavailable"})
+		return
+	}
+
+	var body struct {
+		Language string `json:"language" binding:"required"`
+		Code     string `json:"code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid request body", "details": err.Error()})
+		return
+	}
+
+	// Only a participant may submit into a room, and only while it runs.
+	room, err := sc.warRooms.EnsureParticipant(c.Request.Context(), c.Param("code"), c.GetString("userID"))
+	if err != nil {
+		writeWarRoomError(c, err)
+		return
+	}
+	if room.Status != warroom.StatusInProgress {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "message": "This race is not running"})
+		return
+	}
+
+	sub, err := sc.submissionSvc.Create(c.Request.Context(), submission.CreateInput{
+		UserID:       c.GetString("userID"),
+		ProblemID:    room.ProblemID,
+		ProblemSlug:  room.ProblemSlug,
+		ProblemTitle: room.ProblemTitle,
+		WarRoomID:    room.ID,
+		Language:     body.Language,
+		Code:         body.Code,
+	})
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+
 	sc.dispatch(c, sub)
 }
 

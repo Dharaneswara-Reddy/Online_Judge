@@ -26,8 +26,11 @@ import (
 	problemmongo "github.com/toji339/online-judge/internal/problem/mongorepo"
 	"github.com/toji339/online-judge/internal/queue"
 	"github.com/toji339/online-judge/internal/queue/rabbitmq"
+	"github.com/toji339/online-judge/internal/realtime"
 	"github.com/toji339/online-judge/internal/submission"
 	submissionmongo "github.com/toji339/online-judge/internal/submission/mongorepo"
+	"github.com/toji339/online-judge/internal/warroom"
+	warroommongo "github.com/toji339/online-judge/internal/warroom/mongorepo"
 	"github.com/toji339/online-judge/internal/worker"
 )
 
@@ -64,9 +67,21 @@ func main() {
 	problemSvc := problem.NewService(problemmongo.New(db))
 	submissionSvc := submission.NewService(submissionmongo.New(db))
 
-	// The War Room notifier is attached in a later step; a plain judge
-	// worker needs no listeners.
-	processor := worker.NewProcessor(submissionSvc, problemSvc, sandbox, worker.NopNotifier{})
+	// Redis pub/sub lets a War Room verdict reach whichever API instance
+	// holds the racing participants' WebSockets. A worker without Redis
+	// still judges correctly; only live race updates are lost.
+	var notifier worker.Notifier = worker.NopNotifier{}
+	bus, err := realtime.ConnectRedis(cfg.RedisURL)
+	if err != nil {
+		log.Printf("WARNING: Redis unavailable (%v) — War Room results will not be broadcast", err)
+	} else {
+		defer bus.Close()
+		warRoomSvc := warroom.NewService(warroommongo.New(db), problemSvc)
+		notifier = warroom.NewJudgeNotifier(warRoomSvc, bus)
+		log.Println("Connected to Redis for War Room broadcasts")
+	}
+
+	processor := worker.NewProcessor(submissionSvc, problemSvc, sandbox, notifier)
 
 	// 5. Consume both lanes until interrupted
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

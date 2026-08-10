@@ -171,5 +171,29 @@ func EnsureIndexes(db *mongo.Database) error {
 	}
 	log.Println("Submission indexes created successfully")
 
+	// --- War room collection indexes ---
+	// The room code is the shareable join key, so it must be unique.
+	warRoomsColl := db.Collection("war_rooms")
+	warRoomIndexes := []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "room_code", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{
+				{Key: "status", Value: 1},
+				{Key: "created_at", Value: -1},
+			},
+		},
+		{
+			Keys: bson.D{{Key: "participants.user_id", Value: 1}},
+		},
+	}
+	_, err = warRoomsColl.Indexes().CreateMany(ctx, warRoomIndexes)
+	if err != nil {
+		return fmt.Errorf("failed to create war room indexes: %w", err)
+	}
+	log.Println("War room indexes created successfully")
+
 	return nil
 }

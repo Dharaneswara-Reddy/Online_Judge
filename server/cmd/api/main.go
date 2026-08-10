@@ -12,6 +12,8 @@ import (
 	"github.com/toji339/online-judge/internal/config"
 	"github.com/toji339/online-judge/internal/database"
 	"github.com/toji339/online-judge/internal/queue/rabbitmq"
+	"github.com/toji339/online-judge/internal/ratelimit"
+	"github.com/toji339/online-judge/internal/realtime"
 	"github.com/toji339/online-judge/internal/routes"
 )
 
@@ -52,10 +54,24 @@ func main() {
 		log.Println("Connected to the submission queue")
 	}
 
-	// 6. Set up the Gin router with all routes and middleware
+	// 6. Connect to Redis. Also optional: without it, War Room events only
+	//    reach clients attached to this instance and rate limits are not
+	//    enforced, but every other feature behaves normally.
+	bus, err := realtime.ConnectRedis(cfg.RedisURL)
+	if err != nil {
+		log.Printf("WARNING: Redis unavailable (%v) — War Room sync is limited to this "+
+			"instance and rate limiting is disabled", err)
+	} else {
+		defer bus.Close()
+		deps.Bus = bus
+		deps.Limiter = ratelimit.NewRedisLimiter(bus.Client())
+		log.Println("Connected to Redis")
+	}
+
+	// 7. Set up the Gin router with all routes and middleware
 	router := routes.Setup(db, cfg, deps)
 
-	// 7. Start the HTTP server on the configured port
+	// 8. Start the HTTP server on the configured port
 	log.Printf("Server starting on port %s", cfg.Port)
 	if err := router.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("FATAL: Server failed to start: %v", err)
