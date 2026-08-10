@@ -2,9 +2,12 @@
 .env
 
 # Go
-server/tmp/
-server/api
-api
+# Compiled binaries only. These patterns are anchored with a leading
+# slash on purpose: an unanchored "api" also matches client/src/api/,
+# which silently kept the whole frontend API layer out of the repository.
+/server/tmp/
+/server/api
+/api
 *.exe
 *.out
 
