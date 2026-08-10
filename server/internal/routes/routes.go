@@ -10,8 +10,12 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 
+	"github.com/toji339/online-judge/internal/companytag"
+	companytagmongo "github.com/toji339/online-judge/internal/companytag/mongorepo"
 	"github.com/toji339/online-judge/internal/config"
 	"github.com/toji339/online-judge/internal/controllers"
+	"github.com/toji339/online-judge/internal/discussion"
+	discussionmongo "github.com/toji339/online-judge/internal/discussion/mongorepo"
 	"github.com/toji339/online-judge/internal/judge"
 	"github.com/toji339/online-judge/internal/middleware"
 	"github.com/toji339/online-judge/internal/problem"
@@ -191,6 +195,55 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 
 	router.GET("/ws/warroom/:code", middleware.AuthMiddleware(cfg.JWTSecret), warRoomController.Live)
 
-	// 10. Return the configured router
+	// 10. Mount discussion routes. Reading is public; writing needs an
+	//     account and is rate limited, which is the spam control the
+	//     design document calls for.
+	discussionSvc := discussion.NewService(discussionmongo.New(db))
+	discussionController := controllers.NewDiscussionController(discussionSvc, problemSvc)
+
+	// OptionalAuth lets a signed-in reader see their own votes marked
+	// while still serving anonymous readers.
+	publicProblems.GET("/:slug/discussions",
+		middleware.OptionalAuth(cfg.JWTSecret), discussionController.ListForProblem)
+
+	discussionWrites := router.Group("/api")
+	discussionWrites.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	{
+		discussionWrites.POST("/problems/:slug/discussions",
+			middleware.RateLimit(deps.Limiter, "discussion-post", 5, time.Minute),
+			discussionController.Create)
+		discussionWrites.POST("/discussions/:id/upvote", discussionController.Upvote)
+		discussionWrites.DELETE("/discussions/:id/upvote", discussionController.RemoveUpvote)
+		discussionWrites.DELETE("/discussions/:id", discussionController.Delete)
+	}
+
+	// 11. Mount company tag routes and the company explorer
+	companyRepo := companytagmongo.New(db)
+	companyController := controllers.NewCompanyController(
+		companytag.NewService(companyRepo), problemSvc, companyRepo.ProblemsForCompany)
+
+	publicProblems.GET("/:slug/company-tags",
+		middleware.OptionalAuth(cfg.JWTSecret), companyController.ListForProblem)
+
+	companies := router.Group("/api/companies")
+	{
+		companies.GET("", companyController.ListCompanies)
+		companies.GET("/:name/problems", companyController.ProblemsForCompany)
+	}
+
+	tagWrites := router.Group("/api/problems")
+	tagWrites.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	{
+		tagWrites.POST("/:slug/company-tags",
+			middleware.RateLimit(deps.Limiter, "company-tag", 10, time.Minute),
+			companyController.TagProblem)
+	}
+
+	// 12. Mount the public landing-page endpoints
+	statsController := controllers.NewStatsController(db, problemSvc, submissionSvc, warRoomSvc)
+	router.GET("/api/stats/summary", statsController.Summary)
+	publicProblems.GET("/recent", statsController.RecentProblems)
+
+	// 13. Return the configured router
 	return router
 }

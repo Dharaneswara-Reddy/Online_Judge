@@ -195,5 +195,47 @@ func EnsureIndexes(db *mongo.Database) error {
 	}
 	log.Println("War room indexes created successfully")
 
+	// --- Discussion collection indexes ---
+	discussionsColl := db.Collection("discussions")
+	discussionIndexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: "problem_id", Value: 1},
+				{Key: "created_at", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{{Key: "parent_id", Value: 1}},
+		},
+	}
+	_, err = discussionsColl.Indexes().CreateMany(ctx, discussionIndexes)
+	if err != nil {
+		return fmt.Errorf("failed to create discussion indexes: %w", err)
+	}
+	log.Println("Discussion indexes created successfully")
+
+	// --- Company tag collection indexes ---
+	// The unique compound index is the constraint that stops one user
+	// from inflating a single company's tag count on a problem.
+	companyTagsColl := db.Collection("problem_company_tags")
+	companyTagIndexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: "problem_id", Value: 1},
+				{Key: "user_id", Value: 1},
+				{Key: "company", Value: 1},
+			},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{Key: "company", Value: 1}},
+		},
+	}
+	_, err = companyTagsColl.Indexes().CreateMany(ctx, companyTagIndexes)
+	if err != nil {
+		return fmt.Errorf("failed to create company tag indexes: %w", err)
+	}
+	log.Println("Company tag indexes created successfully")
+
 	return nil
 }

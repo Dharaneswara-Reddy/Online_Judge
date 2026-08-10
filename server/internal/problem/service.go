@@ -36,9 +36,18 @@ func (s *Service) Create(ctx context.Context, input CreateProblemInput) (*Proble
 		return nil, err
 	}
 
+	// Empty slices rather than nil: a nil slice is stored as BSON null,
+	// and later array updates ($push of a company tag, for instance)
+	// fail against null.
+	tags := input.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+
 	p := &Problem{
 		Title: input.Title, Slug: slug, Statement: input.Statement,
-		Difficulty: input.Difficulty, Tags: input.Tags,
+		Difficulty: input.Difficulty, Tags: tags,
+		CompanyTags: []CompanyTagSummary{},
 		TimeLimitMS: input.TimeLimitMS, MemoryLimitMB: input.MemoryLimitMB,
 		StarterCode: input.StarterCode, CreatedAt: time.Now().UTC(),
 	}
