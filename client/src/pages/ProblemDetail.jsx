@@ -1,13 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import NavBar from "../components/layout/NavBar";
 import { fetchProblem } from "../api/problems";
 import { submitSolution, pollSubmission, isTerminalStatus } from "../api/submissions";
 import { runCode } from "../api/judge";
 import CodeEditor from "../components/editor/CodeEditor";
 import LanguageSelector from "../components/editor/LanguageSelector";
 import ExecutionPanel from "../components/editor/ExecutionPanel";
-import { STARTER_CODE, LANGUAGE_META } from "../data/starterCode";
+import DiscussionPanel from "../components/problem/DiscussionPanel";
+import CompanyTagWidget from "../components/problem/CompanyTagWidget";
+import { STARTER_CODE } from "../data/starterCode";
 import "./ProblemDetail.css";
 
 const DIFFICULTY_CLASS = { easy: "badge-easy", medium: "badge-medium", hard: "badge-hard" };
@@ -26,7 +29,7 @@ const VERDICT_DISPLAY = {
 
 export default function ProblemDetail() {
   const { slug } = useParams();
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
 
   const [problem, setProblem] = useState(null);
   const [sampleCases, setSampleCases] = useState([]);
@@ -40,6 +43,8 @@ export default function ProblemDetail() {
   // Execution state (Run)
   const [stdin, setStdin] = useState("");
   const [activeTab, setActiveTab] = useState("input");
+  // Which view fills the left pane: the statement or the comment thread.
+  const [leftTab, setLeftTab] = useState("description");
   const [isRunning, setIsRunning] = useState(false);
   const [runResult, setRunResult] = useState(null);
 
@@ -160,28 +165,32 @@ export default function ProblemDetail() {
   return (
     <div className="pd-page">
       {/* Navigation */}
-      <nav className="home-nav">
-        <div className="home-nav-brand">
-          <span style={{ fontSize: "1.2rem" }}>⚡</span>
-          <Link to="/" style={{ fontSize: "1.1rem", fontWeight: 700, color: "var(--accent)", letterSpacing: "-0.02em", textDecoration: "none" }}>
-            CodeArena
-          </Link>
-        </div>
-        <div className="home-nav-right">
-          <Link to="/problems" className="btn btn-ghost" style={{ padding: "7px 14px", fontSize: "0.8rem", textDecoration: "none" }}>
-            ← Problems
-          </Link>
-          <span className="home-nav-user">{user?.full_name}</span>
-          <button onClick={logout} className="btn btn-ghost" style={{ padding: "7px 14px", fontSize: "0.8rem" }}>
-            Logout
-          </button>
-        </div>
-      </nav>
+      <NavBar />
 
       {/* Split pane */}
       <div className="pd-split">
-        {/* Left pane — Problem statement */}
+        {/* Left pane — Problem statement and discussion */}
         <div className="pd-left">
+          <div className="pd-pane-tabs">
+            <button
+              className={`pd-pane-tab ${leftTab === "description" ? "pd-pane-tab-active" : ""}`}
+              onClick={() => setLeftTab("description")}
+            >
+              Description
+            </button>
+            <button
+              className={`pd-pane-tab ${leftTab === "discussion" ? "pd-pane-tab-active" : ""}`}
+              onClick={() => setLeftTab("discussion")}
+            >
+              Discussion
+            </button>
+          </div>
+
+          {leftTab === "discussion" ? (
+            <div className="pd-statement-card">
+              <DiscussionPanel slug={slug} currentUser={user} />
+            </div>
+          ) : (
           <div className="pd-statement-card">
             <div className="pd-meta-row">
               <span className={`difficulty-badge ${DIFFICULTY_CLASS[problem.difficulty] || ""}`}>
@@ -233,7 +242,10 @@ export default function ProblemDetail() {
                 ))}
               </div>
             )}
+
+            <CompanyTagWidget slug={slug} signedIn={Boolean(user)} />
           </div>
+          )}
         </div>
 
         {/* Right pane — Editor + Execution */}

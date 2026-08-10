@@ -1,0 +1,90 @@
+.company-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+}
+
+.company-widget-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.company-widget-empty,
+.company-widget-mine {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.company-chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.company-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.company-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.company-chip-count {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.company-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.company-input {
+  padding: 7px 10px;
+  font-size: 0.8rem;
+}
+
+.company-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.company-btn {
+  padding: 6px 12px;
+  font-size: 0.76rem;
+}
+
+.company-ask {
+  align-self: flex-start;
+}
+
+.company-error {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--error);
+}

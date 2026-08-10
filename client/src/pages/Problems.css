@@ -147,34 +147,6 @@
   font-size: 0.8rem;
 }
 
-/* -- Difficulty badges -- */
-.difficulty-badge {
-  display: inline-block;
-  padding: 3px 10px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  border-radius: 999px;
-  letter-spacing: 0.02em;
-}
-
-.badge-easy {
-  background: rgba(62, 207, 142, 0.1);
-  color: var(--success);
-  border: 1px solid rgba(62, 207, 142, 0.2);
-}
-
-.badge-medium {
-  background: rgba(227, 168, 87, 0.1);
-  color: var(--accent);
-  border: 1px solid rgba(227, 168, 87, 0.2);
-}
-
-.badge-hard {
-  background: rgba(241, 85, 76, 0.1);
-  color: var(--error);
-  border: 1px solid rgba(241, 85, 76, 0.2);
-}
-
 /* -- Tag pills -- */
 .tag-pill {
   display: inline-block;

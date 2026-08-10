@@ -353,3 +353,34 @@ a:hover {
 .mb-2 { margin-bottom: 8px; }
 .mb-4 { margin-bottom: 16px; }
 .mb-6 { margin-bottom: 24px; }
+
+/* ── Difficulty badges (shared across pages) ── */
+.difficulty-badge,
+.badge {
+  display: inline-block;
+  padding: 3px 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  text-transform: capitalize;
+}
+
+.badge-easy {
+  background: rgba(62, 207, 142, 0.1);
+  color: var(--success);
+  border: 1px solid rgba(62, 207, 142, 0.2);
+}
+
+.badge-medium {
+  background: rgba(227, 168, 87, 0.1);
+  color: var(--accent);
+  border: 1px solid rgba(227, 168, 87, 0.2);
+}
+
+.badge-hard {
+  background: rgba(241, 85, 76, 0.1);
+  color: var(--error);
+  border: 1px solid rgba(241, 85, 76, 0.2);
+}
+

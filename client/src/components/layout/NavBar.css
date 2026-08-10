@@ -1,0 +1,97 @@
+.nav-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.nav-brand-mark {
+  font-size: 1.2rem;
+}
+
+.nav-brand-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -0.02em;
+  text-decoration: none;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  /* Long link lists wrap rather than pushing the account controls off
+     the edge on a narrow window. */
+  flex-wrap: wrap;
+}
+
+.nav-link {
+  padding: 7px 12px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.nav-link:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.nav-link-active {
+  color: var(--accent);
+  background: rgba(227, 168, 87, 0.1);
+}
+
+.nav-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.nav-user {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-user:hover {
+  color: var(--accent);
+}
+
+.nav-btn {
+  padding: 7px 14px;
+  font-size: 0.8rem;
+  text-decoration: none;
+}
+
+@media (max-width: 720px) {
+  .nav-bar {
+    padding: 10px 14px;
+  }
+
+  .nav-user {
+    display: none;
+  }
+}

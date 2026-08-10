@@ -1,0 +1,364 @@
+.wr-page {
+  min-height: 100vh;
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+}
+
+.wr-main {
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 28px 24px 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.wr-loading,
+.wr-empty-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 50vh;
+  color: var(--text-secondary);
+}
+
+.wr-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0 0 6px;
+  letter-spacing: -0.02em;
+}
+
+.wr-subtitle {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  max-width: 62ch;
+  line-height: 1.6;
+}
+
+.wr-section-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.wr-error {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--error);
+}
+
+.wr-error-inline {
+  padding: 8px 16px;
+}
+
+.wr-empty {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+/* ── Lobby actions ── */
+
+.wr-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.wr-action-card {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.wr-card-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.wr-card-text {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.wr-size-picker {
+  display: flex;
+  gap: 6px;
+}
+
+.wr-size {
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.wr-size-active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(227, 168, 87, 0.1);
+}
+
+.wr-code-input {
+  font-family: var(--font-mono);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  max-width: 180px;
+}
+
+/* ── Room list ── */
+
+.wr-room-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wr-room {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+}
+
+.wr-room-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.wr-room-code {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+
+.wr-room-problem {
+  font-size: 0.84rem;
+  color: var(--text-primary);
+}
+
+.wr-room-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.wr-room-slots {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.wr-join-btn {
+  padding: 6px 14px;
+  font-size: 0.76rem;
+}
+
+.wr-status {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+.wr-status-finished { color: var(--success); }
+.wr-status-in_progress { color: var(--accent); }
+.wr-status-expired { color: var(--text-muted); }
+
+/* ── Live race ── */
+
+.wr-live {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.wr-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.wr-strip-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.wr-strip-problem {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.wr-players {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wr-player {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  min-width: 120px;
+}
+
+.wr-player-me {
+  border-color: var(--accent);
+}
+
+.wr-player-empty {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+.wr-player-name {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.wr-player-state {
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.wr-player-state.state-accepted { color: var(--success); }
+.wr-player-state.state-pending,
+.wr-player-state.state-running { color: var(--accent); }
+.wr-player-state.state-wrong_answer,
+.wr-player-state.state-runtime_error,
+.wr-player-state.state-compile_error { color: var(--error); }
+
+.wr-result {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 12px;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.wr-result-win {
+  background: rgba(62, 207, 142, 0.12);
+  color: var(--success);
+}
+
+.wr-result-loss {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+}
+
+.wr-result-link {
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: var(--accent);
+}
+
+.wr-waiting {
+  padding: 10px 20px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  background: rgba(227, 168, 87, 0.08);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.wr-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.wr-statement {
+  width: 280px;
+  flex-shrink: 0;
+  padding: 20px;
+  border-right: 1px solid var(--border-color);
+  overflow-y: auto;
+}
+
+.wr-statement-title {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0 0 10px;
+}
+
+.wr-statement-link {
+  font-size: 0.78rem;
+  color: var(--accent);
+}
+
+.wr-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.wr-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.wr-code-area {
+  flex: 1;
+  min-height: 320px;
+}
+
+@media (max-width: 820px) {
+  .wr-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .wr-body {
+    flex-direction: column;
+  }
+
+  .wr-statement {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border-color);
+  }
+}

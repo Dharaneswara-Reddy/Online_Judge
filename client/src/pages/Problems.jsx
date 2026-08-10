@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import NavBar from "../components/layout/NavBar";
 import { fetchProblems } from "../api/problems";
 import "./Problems.css";
 
@@ -9,7 +9,6 @@ const DIFFICULTY_LABELS = { "": "All", easy: "Easy", medium: "Medium", hard: "Ha
 const DIFFICULTY_CLASS = { easy: "badge-easy", medium: "badge-medium", hard: "badge-hard" };
 
 export default function Problems() {
-  const { user, logout } = useAuth();
   const [problems, setProblems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -38,26 +37,7 @@ export default function Problems() {
 
   return (
     <div className="problems-page">
-      <nav className="home-nav">
-        <div className="home-nav-brand">
-          <span style={{ fontSize: "1.2rem" }}>⚡</span>
-          <Link to="/" style={{ fontSize: "1.1rem", fontWeight: 700, color: "var(--accent)", letterSpacing: "-0.02em", textDecoration: "none" }}>
-            CodeArena
-          </Link>
-        </div>
-        <div className="home-nav-right">
-          <Link to="/playground" className="btn btn-ghost" style={{ padding: "7px 14px", fontSize: "0.8rem", textDecoration: "none" }}>
-            ▶ Playground
-          </Link>
-          <Link to="/problems" className="btn btn-ghost" style={{ padding: "7px 14px", fontSize: "0.8rem", textDecoration: "none", borderColor: "var(--accent)", color: "var(--accent)" }}>
-            Problems
-          </Link>
-          <span className="home-nav-user">{user?.full_name}</span>
-          <button onClick={logout} className="btn btn-ghost" style={{ padding: "7px 14px", fontSize: "0.8rem" }}>
-            Logout
-          </button>
-        </div>
-      </nav>
+      <NavBar />
 
       <main className="problems-content">
         <div className="problems-header">

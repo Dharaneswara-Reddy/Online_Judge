@@ -35,12 +35,12 @@
 }
 
 /* -- Main content -- */
+/* The landing page is a scrolling column of sections rather than a
+   single centred card, so it lays out top-down inside a max width. */
 .home-content {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: calc(100vh - 57px);
-  padding: 32px;
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 0 24px;
 }
 
 /* -- Welcome card -- */
@@ -120,5 +120,162 @@
 
   .home-stats {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ── Landing page ── */
+
+.home-hero {
+  padding: 56px 0 36px;
+  max-width: 720px;
+}
+
+.home-hero-title {
+  font-size: 2.4rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin: 0 0 14px;
+}
+
+.home-hero-accent {
+  color: var(--accent);
+}
+
+.home-hero-text {
+  margin: 0 0 24px;
+  font-size: 0.95rem;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.home-hero-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.home-cta {
+  padding: 10px 22px;
+  font-size: 0.88rem;
+  text-decoration: none;
+}
+
+.home-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+  margin-bottom: 40px;
+}
+
+.home-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+}
+
+.home-stat-value {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.home-stat-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.home-section-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.home-recent {
+  margin-bottom: 40px;
+}
+
+.home-recent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.home-see-all {
+  font-size: 0.78rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.home-recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.home-recent-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  text-decoration: none;
+  transition: border-color var(--transition-fast);
+}
+
+.home-recent-item:hover {
+  border-color: var(--accent);
+}
+
+.home-recent-title {
+  font-size: 0.86rem;
+  color: var(--text-primary);
+}
+
+.home-features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  padding-bottom: 60px;
+}
+
+.home-feature {
+  padding: 18px;
+}
+
+.home-feature-icon {
+  font-size: 1.4rem;
+}
+
+.home-feature-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 10px 0 6px;
+}
+
+.home-feature-text {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 640px) {
+  .home-hero-title {
+    font-size: 1.8rem;
   }
 }

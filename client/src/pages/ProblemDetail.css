@@ -343,3 +343,38 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Left pane tabs (description / discussion) ── */
+
+.pd-pane-tabs {
+  display: flex;
+  gap: 4px;
+  /* Aligned with the statement card's own horizontal padding. */
+  padding: 12px 28px 10px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.pd-pane-tabs + .pd-statement-card {
+  padding-top: 20px;
+}
+
+.pd-pane-tab {
+  padding: 6px 14px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.pd-pane-tab:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.pd-pane-tab-active {
+  color: var(--accent);
+  background: rgba(227, 168, 87, 0.1);
+}

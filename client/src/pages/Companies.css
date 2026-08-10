@@ -1,0 +1,129 @@
+.companies-page {
+  min-height: 100vh;
+  background: var(--bg-primary);
+}
+
+.companies-main {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 28px 24px 60px;
+}
+
+.companies-header {
+  margin-bottom: 24px;
+}
+
+.companies-back {
+  display: inline-block;
+  margin-bottom: 10px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.companies-back:hover {
+  color: var(--accent);
+}
+
+.companies-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0 0 6px;
+  letter-spacing: -0.02em;
+}
+
+.companies-subtitle {
+  margin: 0 0 14px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.companies-search {
+  max-width: 320px;
+  padding: 8px 12px;
+  font-size: 0.82rem;
+}
+
+.companies-loading {
+  display: flex;
+  justify-content: center;
+  padding: 40px;
+}
+
+.companies-empty,
+.companies-error {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.companies-error {
+  color: var(--error);
+}
+
+.companies-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.company-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  text-decoration: none;
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.company-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.company-card-name {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.company-card-meta {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.companies-problem-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.companies-problem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  text-decoration: none;
+  transition: border-color var(--transition-fast);
+}
+
+.companies-problem:hover {
+  border-color: var(--accent);
+}
+
+.companies-problem-title {
+  font-size: 0.88rem;
+  color: var(--text-primary);
+}

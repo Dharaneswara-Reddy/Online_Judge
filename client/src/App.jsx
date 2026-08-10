@@ -3,11 +3,12 @@
  *
  * Sets up the client-side routing using react-router-dom.
  * Routes are organized into:
- * - Public routes: /login, /signup (accessible without auth)
- * - Protected routes: / (requires authentication)
+ * - Public routes: /, /problems, /companies, /login, /signup
+ * - Protected routes: everything that acts on behalf of a user
  *
- * The ProtectedRoute component handles redirecting
- * unauthenticated users to the login page.
+ * The landing page, problem list and company explorer are public on
+ * purpose: a visitor should be able to see what the platform is before
+ * being asked to create an account.
  */
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
@@ -19,6 +20,11 @@ import Home from './pages/Home';
 import Playground from './pages/Playground';
 import Problems from './pages/Problems';
 import ProblemDetail from './pages/ProblemDetail';
+import Profile from './pages/Profile';
+import Companies from './pages/Companies';
+import WarRoomLobby from './pages/WarRoomLobby';
+import WarRoomLive from './pages/WarRoomLive';
+import Admin from './pages/Admin';
 import './App.css';
 
 function App() {
@@ -37,7 +43,7 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Public routes — redirect to home if already logged in */}
+        {/* Auth routes — redirect to home if already logged in */}
         <Route
           path="/login"
           element={user ? <Navigate to="/" replace /> : <Login />}
@@ -47,12 +53,20 @@ function App() {
           element={user ? <Navigate to="/" replace /> : <Signup />}
         />
 
+        {/* Public routes — readable without an account */}
+        <Route path="/" element={<Home />} />
+        <Route path="/problems" element={<Problems />} />
+        <Route path="/problems/:slug" element={<ProblemDetail />} />
+        <Route path="/companies" element={<Companies />} />
+        <Route path="/companies/:name" element={<Companies />} />
+
         {/* Protected routes — require authentication */}
         <Route element={<ProtectedRoute />}>
-          <Route path="/" element={<Home />} />
           <Route path="/playground" element={<Playground />} />
-          <Route path="/problems" element={<Problems />} />
-          <Route path="/problems/:slug" element={<ProblemDetail />} />
+          <Route path="/profile" element={<Profile />} />
+          <Route path="/warrooms" element={<WarRoomLobby />} />
+          <Route path="/warrooms/:code" element={<WarRoomLive />} />
+          <Route path="/admin" element={<Admin />} />
         </Route>
 
         {/* Catch-all — redirect unknown routes to home */}

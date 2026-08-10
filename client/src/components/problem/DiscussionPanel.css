@@ -1,0 +1,157 @@
+.discussion-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 2px 20px;
+}
+
+.discussion-loading {
+  display: flex;
+  justify-content: center;
+  padding: 30px;
+}
+
+.discussion-composer,
+.discussion-reply-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.discussion-input {
+  resize: vertical;
+  font-family: var(--font-family);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.discussion-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.discussion-count {
+  margin-right: auto;
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.discussion-signin,
+.discussion-empty {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.discussion-error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--error);
+}
+
+.discussion-list,
+.discussion-replies {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.discussion-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.discussion-thread {
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+}
+
+/* Replies are indented with a rule rather than nested cards, so a long
+   thread stays scannable. */
+.discussion-replies {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding-left: 14px;
+  border-left: 2px solid var(--border-color);
+}
+
+.discussion-comment-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.discussion-author {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.discussion-time {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.discussion-content {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.discussion-deleted {
+  font-size: 0.8rem;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.discussion-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.discussion-vote,
+.discussion-link-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  transition: color var(--transition-fast);
+}
+
+.discussion-vote {
+  font-family: var(--font-mono);
+}
+
+.discussion-vote:hover:not(:disabled),
+.discussion-link-btn:hover {
+  color: var(--accent);
+}
+
+.discussion-vote:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.discussion-voted {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.discussion-danger:hover {
+  color: var(--error);
+}
