@@ -342,9 +342,13 @@
   border-bottom: 1px solid var(--border-color);
 }
 
+/* Same reason as the problem page: the editor wrapper inside is a flex
+   item, so this has to be a flex container for it to receive a height. */
 .wr-code-area {
   flex: 1;
   min-height: 320px;
+  display: flex;
+  flex-direction: column;
 }
 
 @media (max-width: 820px) {

@@ -2,10 +2,14 @@
    Problem Detail Page Styles
    ============================================ */
 
+/* A definite height, not just a minimum: the split pane below sizes its
+   children against it. With only min-height the panes size to their own
+   content instead, which pushes the execution panel off the screen. */
 .pd-page {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .pd-loading,
@@ -198,9 +202,14 @@
   gap: 8px;
 }
 
+/* Must be a flex column: the editor wrapper inside claims `flex: 1`, and
+   without a flex parent that is ignored, leaving Monaco a few pixels
+   tall and the problem effectively uneditable. */
 .pd-code-area {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ── Submit button ── */
