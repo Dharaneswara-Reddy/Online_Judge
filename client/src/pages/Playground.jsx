@@ -1,11 +1,14 @@
-import { useState, useCallback } from "react";
+import { lazy, Suspense, useState, useCallback } from "react";
 import TerminalChrome from "../components/ui/TerminalChrome";
-import CodeEditor from "../components/editor/CodeEditor";
 import LanguageSelector from "../components/editor/LanguageSelector";
 import ExecutionPanel from "../components/editor/ExecutionPanel";
 import { runCode } from "../api/judge";
 import { STARTER_CODE, LANGUAGE_META } from "../data/starterCode";
 import "./Playground.css";
+
+// Monaco loads on demand rather than with the initial bundle.
+const CodeEditor = lazy(() => import("../components/editor/CodeEditor"));
+const EditorFallback = () => <div className="editor-loading"><div className="spinner" /></div>;
 
 export default function Playground() {
   const [language, setLanguage] = useState("python");
@@ -49,7 +52,7 @@ export default function Playground() {
                 {isRunning ? "Running\u2026" : "\u25B6 Run"}
               </button>
             </div>
-            <CodeEditor language={language} value={code} onChange={handleCodeChange} />
+            <Suspense fallback={<EditorFallback />}><CodeEditor language={language} value={code} onChange={handleCodeChange} /></Suspense>
           </div>
           <div className="playground-panel-col">
             <ExecutionPanel

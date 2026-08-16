@@ -1,6 +1,18 @@
-import Editor from "@monaco-editor/react";
+import Editor, { loader } from "@monaco-editor/react";
+import * as monaco from "monaco-editor";
 import { LANGUAGE_META } from "../../data/starterCode";
 import "./CodeEditor.css";
+
+// Serve Monaco from our own bundle instead of jsdelivr.
+//
+// @monaco-editor/react fetches the editor from a CDN at runtime by
+// default, which puts a third party on the critical path of the screen
+// this product exists for: a blocked or slow CDN leaves the editor blank,
+// and the version comes from a transitive default rather than our
+// lockfile. Configuring the loader here rather than in the entry point
+// keeps Monaco inside this module's chunk, so only the routes that
+// actually mount an editor download it.
+loader.config({ monaco });
 
 function defineTheme(monaco) {
   monaco.editor.defineTheme("codearena-dark", {

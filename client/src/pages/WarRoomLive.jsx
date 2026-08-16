@@ -7,11 +7,11 @@
  * connected to a different API instance still sees them.
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { lazy, Suspense, useState, useEffect, useRef, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import NavBar from "../components/layout/NavBar";
-import CodeEditor from "../components/editor/CodeEditor";
+
 import LanguageSelector from "../components/editor/LanguageSelector";
 import {
   fetchWarRoom,
@@ -22,6 +22,11 @@ import {
 import { pollSubmission, isTerminalStatus } from "../api/submissions";
 import { STARTER_CODE } from "../data/starterCode";
 import "./WarRoom.css";
+
+// Monaco is large, so the editor loads on demand rather than with
+// the initial bundle — a visitor who never opens one never pays for it.
+const CodeEditor = lazy(() => import("../components/editor/CodeEditor"));
+const EditorFallback = () => <div className="editor-loading"><div className="spinner" /></div>;
 
 const STATUS_LABELS = {
   pending: "queued",
@@ -223,7 +228,7 @@ export default function WarRoomLive() {
               </button>
             </div>
             <div className="wr-code-area">
-              <CodeEditor language={language} value={source} onChange={setSource} />
+              <Suspense fallback={<EditorFallback />}><CodeEditor language={language} value={source} onChange={setSource} /></Suspense>
             </div>
           </div>
         </div>

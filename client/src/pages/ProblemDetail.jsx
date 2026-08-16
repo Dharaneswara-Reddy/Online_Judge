@@ -1,17 +1,22 @@
-import { useState, useEffect, useCallback } from "react";
+import { lazy, Suspense, useState, useEffect, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import NavBar from "../components/layout/NavBar";
 import { fetchProblem } from "../api/problems";
 import { submitSolution, pollSubmission, isTerminalStatus } from "../api/submissions";
 import { runCode } from "../api/judge";
-import CodeEditor from "../components/editor/CodeEditor";
+
 import LanguageSelector from "../components/editor/LanguageSelector";
 import ExecutionPanel from "../components/editor/ExecutionPanel";
 import DiscussionPanel from "../components/problem/DiscussionPanel";
 import CompanyTagWidget from "../components/problem/CompanyTagWidget";
 import { STARTER_CODE } from "../data/starterCode";
 import "./ProblemDetail.css";
+
+// Monaco is large, so the editor loads on demand rather than with
+// the initial bundle — a visitor who never opens one never pays for it.
+const CodeEditor = lazy(() => import("../components/editor/CodeEditor"));
+const EditorFallback = () => <div className="editor-loading"><div className="spinner" /></div>;
 
 const DIFFICULTY_CLASS = { easy: "badge-easy", medium: "badge-medium", hard: "badge-hard" };
 
@@ -264,7 +269,7 @@ export default function ProblemDetail() {
               </div>
             </div>
             <div className="pd-code-area">
-              <CodeEditor language={language} value={code} onChange={handleCodeChange} />
+              <Suspense fallback={<EditorFallback />}><CodeEditor language={language} value={code} onChange={handleCodeChange} /></Suspense>
             </div>
           </div>
 
