@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -21,6 +22,10 @@ const judgeImage = "codearena-sandbox:latest"
 const (
 	sourceWriteTimeout = 30 * time.Second
 	compileTimeout     = 15 * time.Second
+
+	// streamDrainGrace is how long StdCopy gets to finish reading output
+	// the program already wrote, after the process itself has exited.
+	streamDrainGrace = 2 * time.Second
 )
 
 // DockerSandbox implements the Sandbox interface using real Docker
@@ -187,22 +192,42 @@ func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin 
 	stderr := newCappedBuffer(maxOutputBytes)
 	start := time.Now()
 	copyDone := make(chan error, 1)
+	copyFinished := make(chan struct{})
 	go func() {
 		_, cErr := stdcopy.StdCopy(stdout, stderr, attach.Reader)
 		copyDone <- cErr
+		close(copyFinished)
 	}()
 
-	// Monitor exec process; close attach connection as soon as process exits
-	// to avoid blocking on stdcopy if child processes keep file descriptors open.
+	// closedByUs records that the watcher below pulled the connection
+	// deliberately, so the resulting read error can be told apart from a
+	// genuine streaming failure.
+	var closedByUs atomic.Bool
+
+	// Watch the exec process and close the attach connection once it
+	// exits, which is what stops StdCopy blocking forever when a child
+	// process keeps the output pipe open.
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-copyFinished:
+				return
 			default:
 				insp, err := s.cli.ContainerExecInspect(context.Background(), execResp.ID)
 				if err == nil && !insp.Running {
-					attach.Close()
+					// The process has exited, but output it already wrote
+					// may still be in flight. Closing immediately races
+					// StdCopy and surfaces as "use of closed network
+					// connection" — which previously became a spurious
+					// runtime error on a correct solution under load.
+					select {
+					case <-copyFinished:
+					case <-time.After(streamDrainGrace):
+						closedByUs.Store(true)
+						attach.Close()
+					}
 					return
 				}
 				time.Sleep(50 * time.Millisecond)
@@ -218,7 +243,9 @@ func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin 
 			Stderr:   "Command execution timed out",
 		}, nil
 	case cErr := <-copyDone:
-		if cErr != nil {
+		// A read error caused by our own close is expected: the process
+		// had already exited and whatever it wrote has been captured.
+		if cErr != nil && !closedByUs.Load() {
 			return ExecuteResult{}, fmt.Errorf("stream output: %w", cErr)
 		}
 	}

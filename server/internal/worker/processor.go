@@ -104,6 +104,11 @@ func (p *Processor) Process(ctx context.Context, job queue.Job) error {
 		if ctx.Err() != nil {
 			return fmt.Errorf("judging interrupted for submission %s: %w", sub.ID, ctx.Err())
 		}
+		// The user-facing reason stays generic so Docker internals never
+		// reach a client, but the real error is logged: without it a
+		// sandbox failure is undiagnosable after the fact.
+		log.Printf("ERROR: sandbox failure judging submission %s (problem %s, %s): %v",
+			sub.ID, sub.ProblemID, sub.Language, err)
 		p.fail(ctx, sub, "execution engine error")
 		return fmt.Errorf("evaluate submission %s: %w", sub.ID, err)
 	}
