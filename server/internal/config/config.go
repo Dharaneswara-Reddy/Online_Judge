@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -64,7 +65,13 @@ func Load() *Config {
 		RedisURL:    getEnvOrDefault("REDIS_URL", "redis://localhost:6379/0"),
 		WorkerCount: getEnvAsIntOrDefault("WORKER_COUNT", 4),
 
-		SecureCookies: getEnvAsBoolOrDefault("SECURE_COOKIES", true),
+		// Default from the frontend's scheme rather than a flat true: a
+		// Secure cookie is dropped by the browser over plain HTTP, which
+		// would silently break local development. Deployments serve the
+		// client over HTTPS and so get the secure setting automatically,
+		// and SECURE_COOKIES overrides either way.
+		SecureCookies: getEnvAsBoolOrDefault("SECURE_COOKIES",
+			strings.HasPrefix(getEnvOrDefault("CLIENT_URL", "http://localhost:5173"), "https://")),
 	}
 
 	// 3. Refuse to start on a signing key weak enough to brute-force
