@@ -54,6 +54,12 @@ var ErrClosed = errors.New("queue client is closed")
 type Client struct {
 	url string
 
+	// namespace prefixes every queue name. Production leaves it empty and
+	// uses the real lane queues; tests set it so their traffic cannot be
+	// consumed by a worker running against the same broker, and so
+	// parallel tests cannot consume each other's messages.
+	namespace string
+
 	mu     sync.Mutex
 	conn   *amqp.Connection
 	pub    *amqp.Channel
@@ -80,6 +86,57 @@ func Connect(url string) (*Client, error) {
 // fatal error.
 func New(url string) *Client {
 	return &Client{url: url}
+}
+
+// NewNamespaced returns a client whose queues are prefixed, isolating it
+// from every other consumer of the same broker.
+//
+// This exists for tests: without it a recovery test shares the real lane
+// queues with any locally running judge worker, which then steals its
+// messages and makes the test fail for reasons unrelated to the code
+// under test.
+func NewNamespaced(url, namespace string) *Client {
+	return &Client{url: url, namespace: namespace}
+}
+
+// queueName resolves a lane to its physical queue, applying the
+// namespace when one is set.
+func (c *Client) queueName(lane queue.Lane) (string, bool) {
+	base, ok := queueNames[lane]
+	if !ok {
+		return "", false
+	}
+	if c.namespace == "" {
+		return base, true
+	}
+	return c.namespace + "." + base, true
+}
+
+// DeleteQueues removes this client's queues from the broker. It is only
+// meaningful for a namespaced client, and exists so a test can clean up
+// the topology it created rather than leaving it behind.
+func (c *Client) DeleteQueues(ctx context.Context) error {
+	if c.namespace == "" {
+		return fmt.Errorf("refusing to delete the shared lane queues")
+	}
+
+	conn, err := c.ensureConnection(ctx)
+	if err != nil {
+		return err
+	}
+	ch, err := conn.Channel()
+	if err != nil {
+		return fmt.Errorf("open channel for cleanup: %w", err)
+	}
+	defer ch.Close()
+
+	for lane := range queueNames {
+		name, _ := c.queueName(lane)
+		if _, err := ch.QueueDelete(name, false, false, false); err != nil {
+			return fmt.Errorf("delete queue %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // reconnect establishes a fresh connection and publish channel, and
@@ -119,7 +176,7 @@ func (c *Client) reconnect() error {
 
 	// Declaring here means either process can start first, and a broker
 	// that lost its definitions gets them back on reconnect.
-	if err := declareTopology(ch); err != nil {
+	if err := c.declareTopology(ch); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
 		return err
@@ -136,8 +193,9 @@ func (c *Client) reconnect() error {
 //
 // The default exchange is used deliberately: each lane routes straight to
 // a queue by name, so no exchange or binding of our own is needed.
-func declareTopology(ch *amqp.Channel) error {
-	for _, name := range queueNames {
+func (c *Client) declareTopology(ch *amqp.Channel) error {
+	for lane := range queueNames {
+		name, _ := c.queueName(lane)
 		_, err := ch.QueueDeclare(
 			name,
 			true,  // durable — survive a broker restart
@@ -237,7 +295,7 @@ func (c *Client) Publish(ctx context.Context, lane queue.Lane, job queue.Job) er
 		return fmt.Errorf("encode job: %w", err)
 	}
 
-	name, ok := queueNames[lane]
+	name, ok := c.queueName(lane)
 	if !ok {
 		return fmt.Errorf("unknown lane %q", lane)
 	}
@@ -296,7 +354,7 @@ func (c *Client) Publish(ctx context.Context, lane queue.Lane, job queue.Job) er
 // so the queue stays the buffer and a worker never holds more work than
 // it can actually run.
 func (c *Client) Consume(ctx context.Context, lane queue.Lane, prefetch int, handler queue.Handler) error {
-	if _, ok := queueNames[lane]; !ok {
+	if _, ok := c.queueName(lane); !ok {
 		return fmt.Errorf("unknown lane %q", lane)
 	}
 
@@ -323,7 +381,7 @@ func (c *Client) Consume(ctx context.Context, lane queue.Lane, prefetch int, han
 // consumer depends on — channel, topology, QoS, consumer registration —
 // is created here, so a reconnect rebuilds all of it.
 func (c *Client) consumeOnce(ctx context.Context, conn *amqp.Connection, lane queue.Lane, prefetch int, handler queue.Handler) error {
-	name := queueNames[lane]
+	name, _ := c.queueName(lane)
 
 	// Each consumer gets its own channel so lanes cannot block each other.
 	ch, err := conn.Channel()
@@ -332,7 +390,7 @@ func (c *Client) consumeOnce(ctx context.Context, conn *amqp.Connection, lane qu
 	}
 	defer ch.Close()
 
-	if err := declareTopology(ch); err != nil {
+	if err := c.declareTopology(ch); err != nil {
 		return err
 	}
 	log.Printf("rabbitmq: topology declared for lane %q", lane)

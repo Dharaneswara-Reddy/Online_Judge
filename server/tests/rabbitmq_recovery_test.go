@@ -2,8 +2,11 @@ package tests
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,10 +28,60 @@ import (
 //
 //	docker compose up -d
 //
-// Note: they consume the real lane queues, so a judge worker running
-// against the same broker will compete for their messages and make them
-// fail. Stop any local worker before running the suite.
+// Each test gets its own namespaced queues, so a judge worker running
+// against the same broker consumes the real lane queues and never sees
+// this traffic. That keeps the suite deterministic whatever else is
+// running locally.
 const brokerURL = "amqp://guest:guest@localhost:5672/"
+
+// isolatedClient returns a client whose queues belong to this test alone,
+// and registers cleanup that removes them from the broker afterwards.
+//
+// Without this, tests share the real lane queues with any locally running
+// worker, which then consumes their messages and fails them for reasons
+// unrelated to the code under test.
+func isolatedClient(t *testing.T) *rabbitmq.Client {
+	t.Helper()
+	client := rabbitmq.NewNamespaced(brokerURL, testNamespace(t))
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := client.DeleteQueues(ctx); err != nil {
+			t.Logf("cleanup: could not delete test queues: %v", err)
+		}
+		_ = client.Close()
+	})
+	return client
+}
+
+// namespaces memoises one prefix per test, so every client a test builds
+// shares the same queues while remaining isolated from other tests.
+var (
+	namespaceMu sync.Mutex
+	namespaces  = map[string]string{}
+)
+
+// testNamespace returns this test's queue prefix, unique to the run so
+// even the same test executed twice cannot inherit stale messages.
+func testNamespace(t *testing.T) string {
+	t.Helper()
+	namespaceMu.Lock()
+	defer namespaceMu.Unlock()
+
+	if ns, ok := namespaces[t.Name()]; ok {
+		return ns
+	}
+
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("generate test namespace: %v", err)
+	}
+	safe := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	ns := fmt.Sprintf("test.%s.%s", safe, hex.EncodeToString(buf))
+	namespaces[t.Name()] = ns
+	return ns
+}
 
 // requireBroker skips the test unless a broker is actually reachable.
 func requireBroker(t *testing.T) {
@@ -61,19 +114,6 @@ func restartBroker(t *testing.T) {
 	t.Fatal("broker did not come back within 90s")
 }
 
-// drainQueue removes anything left over from an earlier run so a test
-// only ever sees its own messages.
-func drainQueue(t *testing.T, lane queue.Lane) {
-	t.Helper()
-	client, err := rabbitmq.Connect(brokerURL)
-	require.NoError(t, err)
-	defer client.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = client.Consume(ctx, lane, 10, func(context.Context, queue.Job) error { return nil })
-}
-
 // =============================================================
 // Test A — the broker is unavailable when the worker starts
 // =============================================================
@@ -83,7 +123,6 @@ func drainQueue(t *testing.T, lane queue.Lane) {
 // is ready.
 func TestRecovery_ConsumerSurvivesAnAbsentBrokerThenConnects(t *testing.T) {
 	requireBroker(t)
-	drainQueue(t, queue.LaneStandard)
 
 	// Point at a dead port first; the client must keep retrying rather
 	// than exiting or spinning.
@@ -97,8 +136,7 @@ func TestRecovery_ConsumerSurvivesAnAbsentBrokerThenConnects(t *testing.T) {
 	assert.ErrorIs(t, err, context.DeadlineExceeded, "the consumer stayed alive and kept retrying")
 
 	// Now a client pointed at the real broker consumes immediately.
-	live := rabbitmq.New(brokerURL)
-	defer live.Close()
+	live := isolatedClient(t)
 
 	received := make(chan string, 1)
 	consumeCtx, stopConsume := context.WithCancel(context.Background())
@@ -110,9 +148,7 @@ func TestRecovery_ConsumerSurvivesAnAbsentBrokerThenConnects(t *testing.T) {
 		})
 	}()
 
-	publisher, err := rabbitmq.Connect(brokerURL)
-	require.NoError(t, err)
-	defer publisher.Close()
+	publisher := isolatedClient(t)
 	require.NoError(t, publisher.Publish(context.Background(), queue.LaneStandard, queue.Job{SubmissionID: "after-wait"}))
 
 	select {
@@ -131,10 +167,8 @@ func TestRecovery_ConsumerSurvivesAnAbsentBrokerThenConnects(t *testing.T) {
 // requirement: no worker restart, judging resumes by itself.
 func TestRecovery_ConsumerResumesAfterBrokerRestart(t *testing.T) {
 	requireBroker(t)
-	drainQueue(t, queue.LaneStandard)
 
-	client := rabbitmq.New(brokerURL)
-	defer client.Close()
+	client := isolatedClient(t)
 
 	var handled int64
 	received := make(chan string, 8)
@@ -150,8 +184,7 @@ func TestRecovery_ConsumerResumesAfterBrokerRestart(t *testing.T) {
 	}()
 
 	// Prove it works before the disruption.
-	publisher, err := rabbitmq.Connect(brokerURL)
-	require.NoError(t, err)
+	publisher := isolatedClient(t)
 	require.NoError(t, publisher.Publish(context.Background(), queue.LaneStandard, queue.Job{SubmissionID: "before"}))
 	select {
 	case id := <-received:
@@ -165,9 +198,7 @@ func TestRecovery_ConsumerResumesAfterBrokerRestart(t *testing.T) {
 	restartBroker(t)
 
 	// The same consumer, never restarted, must pick up new work.
-	after, err := rabbitmq.Connect(brokerURL)
-	require.NoError(t, err)
-	defer after.Close()
+	after := isolatedClient(t)
 
 	var published bool
 	for attempt := range 30 {
@@ -194,7 +225,6 @@ func TestRecovery_ConsumerResumesAfterBrokerRestart(t *testing.T) {
 
 func TestRecovery_MultipleConsumersAllResume(t *testing.T) {
 	requireBroker(t)
-	drainQueue(t, queue.LaneStandard)
 
 	const workers = 3
 	var handled int64
@@ -205,7 +235,9 @@ func TestRecovery_MultipleConsumersAllResume(t *testing.T) {
 
 	clients := make([]*rabbitmq.Client, workers)
 	for i := range workers {
-		clients[i] = rabbitmq.New(brokerURL)
+		// Same namespace as the publisher below, so all three consumers
+		// share this test's queues and none touch the real lane queues.
+		clients[i] = rabbitmq.NewNamespaced(brokerURL, testNamespace(t))
 		defer clients[i].Close()
 
 		go func(c *rabbitmq.Client) {
@@ -222,9 +254,7 @@ func TestRecovery_MultipleConsumersAllResume(t *testing.T) {
 
 	// Publish one job per worker; between them they must take all of it,
 	// which only happens if every consumer re-registered.
-	publisher, err := rabbitmq.Connect(brokerURL)
-	require.NoError(t, err)
-	defer publisher.Close()
+	publisher := isolatedClient(t)
 
 	for i := range workers {
 		var sent bool
@@ -258,17 +288,14 @@ func TestRecovery_MultipleConsumersAllResume(t *testing.T) {
 // its worker died mid-judge — must see the job again.
 func TestRecovery_UnacknowledgedWorkIsRedelivered(t *testing.T) {
 	requireBroker(t)
-	drainQueue(t, queue.LaneStandard)
 
-	publisher, err := rabbitmq.Connect(brokerURL)
-	require.NoError(t, err)
-	defer publisher.Close()
+	publisher := isolatedClient(t)
 	require.NoError(t, publisher.Publish(context.Background(), queue.LaneStandard,
 		queue.Job{SubmissionID: "redelivered"}))
 
 	// First consumer takes the job and dies without acknowledging, which
 	// is what a killed worker looks like to the broker.
-	first := rabbitmq.New(brokerURL)
+	first := isolatedClient(t)
 	got := make(chan struct{}, 1)
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
 	go func() {
@@ -288,8 +315,7 @@ func TestRecovery_UnacknowledgedWorkIsRedelivered(t *testing.T) {
 	require.NoError(t, first.Close())
 
 	// A second consumer must be given the same job.
-	second := rabbitmq.New(brokerURL)
-	defer second.Close()
+	second := isolatedClient(t)
 	redelivered := make(chan string, 1)
 	secondCtx, cancelSecond := context.WithCancel(context.Background())
 	defer cancelSecond()
@@ -313,16 +339,12 @@ func TestRecovery_UnacknowledgedWorkIsRedelivered(t *testing.T) {
 // terminal, so redelivering it would loop forever.
 func TestRecovery_FailedJobsAreNotRequeuedForever(t *testing.T) {
 	requireBroker(t)
-	drainQueue(t, queue.LaneStandard)
 
-	publisher, err := rabbitmq.Connect(brokerURL)
-	require.NoError(t, err)
-	defer publisher.Close()
+	publisher := isolatedClient(t)
 	require.NoError(t, publisher.Publish(context.Background(), queue.LaneStandard,
 		queue.Job{SubmissionID: "always-fails"}))
 
-	client := rabbitmq.New(brokerURL)
-	defer client.Close()
+	client := isolatedClient(t)
 
 	var attempts int64
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -345,16 +367,12 @@ func TestRecovery_FailedJobsAreNotRequeuedForever(t *testing.T) {
 // context lets a running job finish rather than abandoning it.
 func TestRecovery_ShutdownWaitsForInFlightWork(t *testing.T) {
 	requireBroker(t)
-	drainQueue(t, queue.LaneStandard)
 
-	publisher, err := rabbitmq.Connect(brokerURL)
-	require.NoError(t, err)
-	defer publisher.Close()
+	publisher := isolatedClient(t)
 	require.NoError(t, publisher.Publish(context.Background(), queue.LaneStandard,
 		queue.Job{SubmissionID: "in-flight"}))
 
-	client := rabbitmq.New(brokerURL)
-	defer client.Close()
+	client := isolatedClient(t)
 
 	started := make(chan struct{})
 	var finished atomic.Bool
