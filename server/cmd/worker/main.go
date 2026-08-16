@@ -17,7 +17,6 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/toji339/online-judge/internal/config"
 	"github.com/toji339/online-judge/internal/database"
@@ -48,12 +47,11 @@ func main() {
 	defer database.Disconnect(client)
 	db := client.Database(cfg.DBName)
 
-	// 2. Connect to the broker — without it a worker has nothing to do
-	broker, err := rabbitmq.Connect(cfg.RabbitMQURL)
-	if err != nil {
-		log.Fatalf("FATAL: Could not connect to RabbitMQ at %s: %v\n"+
-			"Start it with: docker compose up -d", cfg.RabbitMQURL, err)
-	}
+	// 2. Create the broker client. It connects in the background and
+	//    recovers on its own, so a broker that is down at startup — or
+	//    that restarts later — is something to wait through rather than
+	//    a reason to exit. The worker has nothing to do until it is up.
+	broker := rabbitmq.New(cfg.RabbitMQURL)
 	defer broker.Close()
 
 	// 3. Create the Docker sandbox that actually runs user code
@@ -92,29 +90,23 @@ func main() {
 		wg.Add(1)
 		go func(lane queue.Lane) {
 			defer wg.Done()
-			consumeLane(ctx, broker, lane, cfg.WorkerCount, processor)
+			// Consume owns its own recovery: it blocks until the broker
+			// exists, rebuilds the channel, topology, QoS and consumer
+			// after any failure, and returns only on shutdown.
+			if err := broker.Consume(ctx, lane, cfg.WorkerCount, processor.Process); err != nil && ctx.Err() == nil {
+				log.Printf("rabbitmq: lane %q gave up: %v", lane, err)
+			}
 		}(lane)
 	}
 
 	log.Printf("Judge worker started with %d concurrent slots per lane", cfg.WorkerCount)
+
+	// Wait for a signal, then let each lane drain. Consume stops taking
+	// new deliveries as soon as the context is cancelled and waits for
+	// the jobs already running, so a shutdown never abandons a judged
+	// submission without acknowledging it.
+	<-ctx.Done()
+	log.Println("Judge worker shutting down, waiting for in-flight submissions...")
 	wg.Wait()
 	log.Println("Judge worker stopped")
-}
-
-// consumeLane runs one lane's consumer, reconnecting after a broker
-// hiccup so a worker does not silently stop judging.
-func consumeLane(ctx context.Context, broker *rabbitmq.Client, lane queue.Lane, prefetch int, processor *worker.Processor) {
-	for {
-		err := broker.Consume(ctx, lane, prefetch, processor.Process)
-		if ctx.Err() != nil {
-			return
-		}
-		log.Printf("WARNING: lane %q consumer stopped (%v), retrying in 5s", lane, err)
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(5 * time.Second):
-		}
-	}
 }

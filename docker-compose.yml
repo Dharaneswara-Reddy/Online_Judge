@@ -7,17 +7,24 @@
 #   docker compose down       stop them (data is discarded)
 #
 # RabbitMQ's management UI is at http://localhost:15672 (guest/guest).
+#
+# Both services bind to 127.0.0.1 on purpose: Docker's published ports
+# bypass host firewalls, so a bare "5672:5672" would expose the broker
+# to the whole network.
 
 services:
   rabbitmq:
-    image: rabbitmq:3.13-management-alpine
+    image: rabbitmq:4-management
     container_name: oj-rabbitmq
     ports:
       - "127.0.0.1:5672:5672"   # AMQP — the API and judge workers connect here
       - "127.0.0.1:15672:15672" # management UI, handy for watching queue depth
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      # Local development credentials only. A deployment supplies its own
+      # through RABBITMQ_USER / RABBITMQ_PASSWORD and never uses these.
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s

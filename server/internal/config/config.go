@@ -6,7 +6,9 @@
 package config
 
 import (
+	"fmt"
 	"log"
+	neturl "net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -61,7 +63,7 @@ func Load() *Config {
 		// Queue and cache default to the local docker-compose services.
 		// They are not required: the API degrades to synchronous judging
 		// and an uncached read path when they are unreachable.
-		RabbitMQURL: getEnvOrDefault("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+		RabbitMQURL: rabbitMQURL(),
 		RedisURL:    getEnvOrDefault("REDIS_URL", "redis://localhost:6379/0"),
 		WorkerCount: getEnvAsIntOrDefault("WORKER_COUNT", 4),
 
@@ -82,6 +84,34 @@ func Load() *Config {
 
 	// 4. Return the validated config
 	return config
+}
+
+// rabbitMQURL resolves the broker address.
+//
+// RABBITMQ_URL stays the primary setting — it is what a managed broker
+// hands you. The component variables exist for environments that supply
+// host, credentials and vhost separately (Compose, Kubernetes secrets),
+// and are only consulted when no full URL is given, so the two can never
+// disagree.
+func rabbitMQURL() string {
+	if url := os.Getenv("RABBITMQ_URL"); url != "" {
+		return url
+	}
+
+	user := getEnvOrDefault("RABBITMQ_USER", "guest")
+	password := getEnvOrDefault("RABBITMQ_PASSWORD", "guest")
+	host := getEnvOrDefault("RABBITMQ_HOST", "localhost")
+	port := getEnvOrDefault("RABBITMQ_PORT", "5672")
+	vhost := getEnvOrDefault("RABBITMQ_VHOST", "/")
+
+	// Credentials and the vhost are escaped: a password containing "@"
+	// or "/" would otherwise silently produce a different address.
+	return fmt.Sprintf("amqp://%s:%s@%s:%s/%s",
+		neturl.QueryEscape(user),
+		neturl.QueryEscape(password),
+		host, port,
+		neturl.PathEscape(strings.TrimPrefix(vhost, "/")),
+	)
 }
 
 // getEnvAsBoolOrDefault reads a boolean environment variable. Anything
