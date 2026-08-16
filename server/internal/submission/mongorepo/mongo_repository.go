@@ -29,6 +29,13 @@ func New(db *mongo.Database) *MongoRepository {
 func (r *MongoRepository) Create(ctx context.Context, s *submission.Submission) error {
 	result, err := r.submissions.InsertOne(ctx, s)
 	if err != nil {
+		// The unique partial index on non-terminal submissions is what
+		// actually enforces admission control. A duplicate key here means
+		// this user already has work in flight — including when two
+		// requests raced and both passed the pre-check.
+		if mongo.IsDuplicateKeyError(err) {
+			return submission.ErrTooManyPending
+		}
 		return fmt.Errorf("insert submission: %w", err)
 	}
 	s.ID = result.InsertedID.(bson.ObjectID).Hex()

@@ -191,6 +191,21 @@ func EnsureIndexes(db *mongo.Database) error {
 				{Key: "problem_id", Value: 1},
 			},
 		},
+		// Admission control, enforced by the database rather than by a
+		// count-then-insert in application code — which races, because two
+		// concurrent requests both read "none in flight" before either
+		// writes. Being partial, the constraint only covers non-terminal
+		// submissions, so it releases itself the moment a verdict lands
+		// and there is no counter to leak or reconcile.
+		{
+			Keys: bson.D{{Key: "user_id", Value: 1}},
+			Options: options.Index().
+				SetName("one_inflight_submission_per_user").
+				SetUnique(true).
+				SetPartialFilterExpression(bson.M{
+					"status": bson.M{"$in": []string{"pending", "running"}},
+				}),
+		},
 	}
 	_, err = submissionsColl.Indexes().CreateMany(ctx, submissionIndexes)
 	if err != nil {

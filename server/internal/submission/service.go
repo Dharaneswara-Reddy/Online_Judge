@@ -9,8 +9,17 @@ import (
 )
 
 // maxPendingPerUser is the admission-control limit described in the HLD:
-// one in-flight submission per user. It is enforced at the service layer
-// so it applies no matter which transport (HTTP or War Room) submits.
+// one in-flight submission per user.
+//
+// The database enforces it, not this constant. A unique partial index on
+// user_id over non-terminal submissions makes an over-limit insert fail
+// with a duplicate key, which is correct across any number of API
+// processes — a count-then-insert here would race, since two concurrent
+// requests both read "none in flight" before either writes.
+//
+// Raising this above 1 therefore needs more than editing the constant:
+// a uniqueness constraint cannot express "at most N", so it would need a
+// reservation document per slot, or a counter updated conditionally.
 const maxPendingPerUser = 1
 
 // maxCodeBytes caps the source we accept, keeping oversized payloads out
@@ -54,7 +63,10 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*Submission, e
 		return nil, err
 	}
 
-	// 2. Admission control — refuse a second in-flight submission
+	// 2. Admission control — a cheap pre-check so the common case gets a
+	//    clean rejection without a failed insert. It is deliberately not
+	//    the enforcement point: the database constraint below is, because
+	//    this read and the insert that follows are not atomic together.
 	pending, err := s.repo.CountPending(ctx, input.UserID)
 	if err != nil {
 		return nil, err
@@ -78,7 +90,10 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*Submission, e
 		SubmittedAt:  time.Now().UTC(),
 	}
 
-	// 4. Persist it
+	// 4. Persist it. This is where admission control is actually decided:
+	//    the repository reports ErrTooManyPending when the constraint
+	//    rejects the insert, which is what catches a race that slipped
+	//    past the pre-check above.
 	if err := s.repo.Create(ctx, sub); err != nil {
 		return nil, err
 	}

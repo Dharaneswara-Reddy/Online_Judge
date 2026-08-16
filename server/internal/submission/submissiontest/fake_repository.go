@@ -28,6 +28,18 @@ func New() *FakeRepository {
 func (r *FakeRepository) Create(_ context.Context, s *submission.Submission) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Mirrors the unique partial index in MongoDB: at most one
+	// non-terminal submission per user. Holding the lock across the check
+	// and the insert gives the same all-or-nothing behaviour the database
+	// constraint provides, so a concurrency test against the fake is
+	// meaningful rather than vacuous.
+	for _, existing := range r.items {
+		if existing.UserID == s.UserID && !existing.Status.IsTerminal() {
+			return submission.ErrTooManyPending
+		}
+	}
+
 	r.nextID++
 	s.ID = strconv.Itoa(r.nextID)
 	clone := *s
