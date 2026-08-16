@@ -13,8 +13,8 @@ services:
     image: rabbitmq:3.13-management-alpine
     container_name: oj-rabbitmq
     ports:
-      - "5672:5672"   # AMQP — the API and judge workers connect here
-      - "15672:15672" # management UI, handy for watching queue depth
+      - "127.0.0.1:5672:5672"   # AMQP — the API and judge workers connect here
+      - "127.0.0.1:15672:15672" # management UI, handy for watching queue depth
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
@@ -29,7 +29,7 @@ services:
     image: redis:7-alpine
     container_name: oj-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     # Cache and ephemeral War Room state only — nothing here needs to
     # survive a restart, so persistence stays off.
     command: ["redis-server", "--save", "", "--appendonly", "no"]

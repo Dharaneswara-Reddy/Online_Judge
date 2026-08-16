@@ -12,6 +12,9 @@ const (
 	VerdictMemoryLimitExceeded Verdict = "mle"
 	VerdictRuntimeError        Verdict = "runtime_error"
 	VerdictCompileError        Verdict = "compile_error"
+	// VerdictOutputLimitExceeded is returned when a program printed more
+	// than the judge will buffer, so its output cannot be compared.
+	VerdictOutputLimitExceeded Verdict = "output_limit_exceeded"
 )
 
 // TestCase holds input and expected output for one test case.
@@ -34,6 +37,9 @@ type ExecuteResult struct {
 	TimedOut  bool
 	OOMKilled bool
 	RuntimeMS int64
+	// OutputTruncated is set when the program produced more output than
+	// the judge is willing to hold in memory.
+	OutputTruncated bool
 }
 
 // JudgeResult is the final verdict after evaluating all test cases.

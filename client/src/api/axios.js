@@ -15,8 +15,12 @@ import axios from 'axios';
 // Create an Axios instance with the backend's base URL.
 // All API calls in the app should import and use this instance
 // instead of the global axios object.
+// The API origin is build-time configuration, not a constant: a
+// deployed bundle must not point at the developer's own machine. Set
+// VITE_API_URL at build time; the default keeps local development
+// working with no setup.
 const api = axios.create({
-  baseURL: 'http://localhost:8080/api',
+  baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:8080/api',
 
   // This is critical for cookie-based auth.
   // Without it, the browser won't send or receive cookies

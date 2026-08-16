@@ -141,7 +141,15 @@ func (c *Client) Consume(ctx context.Context, lane queue.Lane, prefetch int, han
 		return fmt.Errorf("consume %s: %w", name, err)
 	}
 
-	log.Printf("worker: consuming lane %q (prefetch %d)", lane, prefetch)
+	log.Printf("worker: consuming lane %q (%d concurrent slots)", lane, prefetch)
+
+	// Handlers run concurrently up to the prefetch count. Dispatching
+	// inline instead would make each lane strictly serial, so one slow
+	// submission would block every job queued behind it — and a prefetch
+	// above one would merely hoard jobs an idle worker could have taken.
+	slots := make(chan struct{}, prefetch)
+	var wg sync.WaitGroup
+	defer wg.Wait() // let in-flight judging finish before the channel closes
 
 	for {
 		select {
@@ -152,7 +160,21 @@ func (c *Client) Consume(ctx context.Context, lane queue.Lane, prefetch int, han
 			if !ok {
 				return fmt.Errorf("%w: consumer channel closed", queue.ErrUnavailable)
 			}
-			c.dispatch(ctx, delivery, handler)
+
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				// Shutting down: hand the job back so another worker takes it.
+				_ = delivery.Nack(false, true)
+				return ctx.Err()
+			}
+
+			wg.Add(1)
+			go func(d amqp.Delivery) {
+				defer wg.Done()
+				defer func() { <-slots }()
+				c.dispatch(ctx, d, handler)
+			}(delivery)
 		}
 	}
 }

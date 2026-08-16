@@ -312,7 +312,15 @@ Ensure you have the following installed on your system:
    npm install
    ```
 
-3. **Start Development Server**:
+3. **Point the client at your API** (optional for local work):
+   The API origin is read from `VITE_API_URL` at build time and defaults
+   to `http://localhost:8080/api`. For any non-local deployment, set it
+   in `client/.env.local` (git-ignored):
+   ```env
+   VITE_API_URL=https://api.your-domain.example/api
+   ```
+
+4. **Start Development Server**:
    ```bash
    npm run dev
    ```

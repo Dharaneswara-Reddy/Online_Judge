@@ -31,16 +31,38 @@ import (
 type AuthController struct {
 	db        *mongo.Database
 	jwtSecret string
+	// secureCookies marks the session cookie Secure. It is configuration
+	// rather than a constant so local development over plain HTTP still
+	// works, while deployments default to the safe setting.
+	secureCookies bool
 }
 
 // NewAuthController creates a new AuthController with the given
 // database and JWT secret. This is called once at startup and
 // the controller is then passed to the route setup.
-func NewAuthController(db *mongo.Database, jwtSecret string) *AuthController {
+func NewAuthController(db *mongo.Database, jwtSecret string, secureCookies bool) *AuthController {
 	return &AuthController{
-		db:        db,
-		jwtSecret: jwtSecret,
+		db:            db,
+		jwtSecret:     jwtSecret,
+		secureCookies: secureCookies,
 	}
+}
+
+// setSessionCookie writes the auth cookie with the flags that make it a
+// safe session credential.
+//
+// SameSite=Lax is the one that matters most: Gin's default leaves the
+// attribute off entirely, and a cookie with no SameSite is still sent on
+// cross-site POSTs by browsers that have not adopted Lax-by-default,
+// which makes every state-changing endpoint CSRF-able. Setting it
+// explicitly closes that. Lax rather than Strict keeps ordinary
+// navigation into the app working.
+//
+// The same flags must be used when clearing the cookie, since a browser
+// only replaces a cookie whose name, path and attributes all match.
+func (ac *AuthController) setSessionCookie(c *gin.Context, token string, maxAge int) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("token", token, maxAge, "/", "", ac.secureCookies, true)
 }
 
 // emailRegex is a simple regex pattern for validating email format.
@@ -196,7 +218,12 @@ func (ac *AuthController) Login(c *gin.Context) {
 
 	user, err := models.FindUserByEmail(ctx, ac.db, input.Email)
 	if err != nil {
-		// Generic error message — never reveal whether email or password was wrong
+		// Hash against a dummy before answering. The response text is
+		// already identical for both failures, but returning here without
+		// hashing would make a missing account answer ~100x faster than a
+		// wrong password, which is a usable account-enumeration oracle.
+		models.BurnPasswordComparison(input.Password)
+
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"message": "Invalid email or password",
@@ -225,12 +252,7 @@ func (ac *AuthController) Login(c *gin.Context) {
 	}
 
 	// 6. Set the JWT as an HTTP-only cookie on the response
-	//    - HttpOnly: true  → JavaScript cannot access it (XSS protection)
-	//    - Secure: false    → Allow HTTP in development (set true in production)
-	//    - SameSite: Lax    → Cookie sent on top-level navigations and GET requests
-	//    - MaxAge: 86400    → Cookie expires in 24 hours
-	//    - Path: /          → Cookie is sent with every request
-	c.SetCookie("token", token, 86400, "/", "", false, true)
+	ac.setSessionCookie(c, token, 86400)
 
 	// 7. Send a success response with the user data (no token in body)
 	c.JSON(http.StatusOK, gin.H{
@@ -253,7 +275,7 @@ func (ac *AuthController) Logout(c *gin.Context) {
 
 	// 1. Clear the JWT cookie by setting MaxAge to -1
 	//    This tells the browser to delete the cookie immediately
-	c.SetCookie("token", "", -1, "/", "", false, true)
+	ac.setSessionCookie(c, "", -1)
 
 	// 2. Send a success response
 	c.JSON(http.StatusOK, gin.H{

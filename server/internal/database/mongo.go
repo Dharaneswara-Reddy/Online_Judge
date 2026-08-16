@@ -95,7 +95,10 @@ func EnsureIndexes(db *mongo.Database) error {
 	}
 
 	// 3. Create the indexes on the collection
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Index builds on a collection with millions of documents take
+	// far longer than a request would; a short budget here means the
+	// API refuses to start rather than waiting.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	_, err := collection.Indexes().CreateMany(ctx, indexes)
@@ -107,16 +110,25 @@ func EnsureIndexes(db *mongo.Database) error {
 
 	// --- Problem collection indexes ---
 	problemsColl := db.Collection("problems")
+	// Every listing sorts by created_at descending, so each filter needs
+	// that as the trailing key — otherwise Mongo has to fetch the matches
+	// and sort them in memory, which fails outright past 32MB.
 	problemIndexes := []mongo.IndexModel{
 		{
 			Keys:    bson.D{{Key: "slug", Value: 1}},
 			Options: options.Index().SetUnique(true),
 		},
 		{
-			Keys: bson.D{{Key: "difficulty", Value: 1}},
+			Keys: bson.D{{Key: "created_at", Value: -1}},
 		},
 		{
-			Keys: bson.D{{Key: "tags", Value: 1}},
+			Keys: bson.D{{Key: "difficulty", Value: 1}, {Key: "created_at", Value: -1}},
+		},
+		{
+			Keys: bson.D{{Key: "tags", Value: 1}, {Key: "created_at", Value: -1}},
+		},
+		{
+			Keys: bson.D{{Key: "company_tags.company", Value: 1}, {Key: "created_at", Value: -1}},
 		},
 	}
 	_, err = problemsColl.Indexes().CreateMany(ctx, problemIndexes)
@@ -164,6 +176,21 @@ func EnsureIndexes(db *mongo.Database) error {
 				{Key: "judged_at", Value: 1},
 			},
 		},
+		// The landing page counts accepted submissions; status is not a
+		// prefix of any index above, so without this it is a collection
+		// scan on the largest collection in the system.
+		{
+			Keys: bson.D{{Key: "status", Value: 1}},
+		},
+		// Covers both the profile's solved-problem set and its accepted
+		// count without touching a document.
+		{
+			Keys: bson.D{
+				{Key: "user_id", Value: 1},
+				{Key: "status", Value: 1},
+				{Key: "problem_id", Value: 1},
+			},
+		},
 	}
 	_, err = submissionsColl.Indexes().CreateMany(ctx, submissionIndexes)
 	if err != nil {
@@ -186,7 +213,11 @@ func EnsureIndexes(db *mongo.Database) error {
 			},
 		},
 		{
-			Keys: bson.D{{Key: "participants.user_id", Value: 1}},
+			Keys: bson.D{{Key: "participants.user_id", Value: 1}, {Key: "created_at", Value: -1}},
+		},
+		// The second branch of the stale-room sweep filters on started_at.
+		{
+			Keys: bson.D{{Key: "status", Value: 1}, {Key: "started_at", Value: 1}},
 		},
 	}
 	_, err = warRoomsColl.Indexes().CreateMany(ctx, warRoomIndexes)

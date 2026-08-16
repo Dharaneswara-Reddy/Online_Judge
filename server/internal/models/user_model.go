@@ -72,6 +72,20 @@ func HashPassword(password string) (string, error) {
 	return string(bytes), nil
 }
 
+// dummyHash is a bcrypt hash of a fixed random string, used only to
+// spend the same time as a real comparison when no account exists.
+var dummyHash = []byte("$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy")
+
+// BurnPasswordComparison performs a throwaway bcrypt comparison.
+//
+// Login must take about as long whether or not the account exists.
+// Returning early for an unknown email would leak that difference as a
+// timing oracle, letting an attacker enumerate which addresses are
+// registered before spending any guesses on passwords.
+func BurnPasswordComparison(password string) {
+	_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+}
+
 // CheckPassword compares a bcrypt hash with a plaintext
 // password. Returns true if they match, false otherwise.
 // This function never reveals which part failed — it simply

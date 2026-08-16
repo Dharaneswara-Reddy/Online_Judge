@@ -32,6 +32,10 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
+// maxRequestBodyBytes caps any single request body. The largest
+// legitimate payload is a 64KB submission, so 1MB is generous.
+const maxRequestBodyBytes = 1 << 20
+
 // Deps holds the external services the API needs. Any of them may be nil,
 // and the router degrades accordingly rather than refusing to start:
 //
@@ -69,7 +73,13 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	// 1. Create a new Gin engine with default middleware (logger, recovery)
 	router := gin.Default()
 
-	// 2. Configure CORS to allow the React frontend to make requests
+	// 2. Apply global hardening before anything else runs: a body cap so
+	//    an oversized request is refused before it is buffered, and the
+	//    response headers that govern how browsers treat our output.
+	router.Use(middleware.MaxBodySize(maxRequestBodyBytes))
+	router.Use(middleware.SecurityHeaders(cfg.SecureCookies))
+
+	// 3. Configure CORS to allow the React frontend to make requests
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{cfg.ClientURL},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -83,11 +93,18 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	warRoomSvc := warroom.NewService(warroommongo.New(db), problemSvc)
 
 	// 4. Mount the auth routes
-	authController := controllers.NewAuthController(db, cfg.JWTSecret)
+	authController := controllers.NewAuthController(db, cfg.JWTSecret, cfg.SecureCookies)
 	auth := router.Group("/api/auth")
 	{
-		auth.POST("/register", authController.Register)
-		auth.POST("/login", authController.Login)
+		// Keyed by address, not by user: there is no authenticated user
+		// yet, so the per-user limiter would let every attempt through and
+		// password guessing would be unthrottled.
+		auth.POST("/register",
+			middleware.RateLimitByIP(deps.Limiter, "auth-register", 5, time.Hour),
+			authController.Register)
+		auth.POST("/login",
+			middleware.RateLimitByIP(deps.Limiter, "auth-login", 10, 15*time.Minute),
+			authController.Login)
 		auth.POST("/logout", authController.Logout)
 
 		// Protected group — all routes below require authentication
@@ -109,7 +126,13 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	} else {
 		judgeController := controllers.NewJudgeController(sandbox)
 		judgeGroup := router.Group("/api/judge")
-		judgeGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+		// Every request here creates a Docker container on this host, so
+		// it needs a throttle of its own — submissions get theirs from
+		// per-user admission control, but the playground bypasses that.
+		judgeGroup.Use(
+			middleware.AuthMiddleware(cfg.JWTSecret),
+			middleware.RateLimit(deps.Limiter, "judge-run", 20, time.Minute),
+		)
 		{
 			judgeGroup.POST("/run", judgeController.RunCode)
 			judgeGroup.POST("/run-raw", judgeController.RunRaw)

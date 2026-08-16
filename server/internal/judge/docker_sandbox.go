@@ -44,7 +44,18 @@ func (d *DockerSandbox) NewSubmission(ctx context.Context, language, sourceCode 
 	hostConfig := &container.HostConfig{
 		NetworkMode:    "none",
 		ReadonlyRootfs: true,
-		Tmpfs:          map[string]string{"/home/sandbox": "rw,exec,size=256m,uid=1000,gid=1000", "/tmp": "rw,exec,size=256m,uid=1000,gid=1000"},
+		// Drop every capability and forbid regaining privileges. Without
+		// these, a local privilege escalation in any setuid binary would
+		// hand user code root inside the container, which is the standing
+		// precondition for most published container escapes. nosuid on
+		// the writable mounts stops the same trick via a file the program
+		// creates itself.
+		CapDrop:     []string{"ALL"},
+		SecurityOpt: []string{"no-new-privileges"},
+		Tmpfs: map[string]string{
+			"/home/sandbox": "rw,exec,nosuid,nodev,size=256m,uid=1000,gid=1000",
+			"/tmp":          "rw,exec,nosuid,nodev,size=256m,uid=1000,gid=1000",
+		},
 		Resources: container.Resources{
 			Memory:     memBytes,
 			MemorySwap: memBytes, // no swap headroom
@@ -150,11 +161,16 @@ func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin 
 		}()
 	}
 
-	var stdout, stderr bytes.Buffer
+	// Output is streamed out of the container and buffered here, in the
+	// judge process — entirely outside the container's memory cgroup. A
+	// program that prints in a loop stays well under its own limit while
+	// exhausting the worker's heap, so the buffers are capped.
+	stdout := newCappedBuffer(maxOutputBytes)
+	stderr := newCappedBuffer(maxOutputBytes)
 	start := time.Now()
 	copyDone := make(chan error, 1)
 	go func() {
-		_, cErr := stdcopy.StdCopy(&stdout, &stderr, attach.Reader)
+		_, cErr := stdcopy.StdCopy(stdout, stderr, attach.Reader)
 		copyDone <- cErr
 	}()
 
@@ -201,6 +217,11 @@ func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin 
 		ExitCode:  inspect.ExitCode,
 		RuntimeMS: runtimeMS,
 		OOMKilled: inspect.ExitCode == 137,
+		// A program that overran the output cap is reported as failed
+		// rather than having a truncated prefix compared against the
+		// expected output, which could otherwise read as Wrong Answer or,
+		// worse, accidentally match.
+		OutputTruncated: stdout.Truncated() || stderr.Truncated(),
 	}, nil
 }
 

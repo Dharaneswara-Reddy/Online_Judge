@@ -7,7 +7,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/toji339/online-judge/internal/config"
 	"github.com/toji339/online-judge/internal/database"
@@ -71,9 +78,40 @@ func main() {
 	// 7. Set up the Gin router with all routes and middleware
 	router := routes.Setup(db, cfg, deps)
 
-	// 8. Start the HTTP server on the configured port
-	log.Printf("Server starting on port %s", cfg.Port)
-	if err := router.Run(":" + cfg.Port); err != nil {
-		log.Fatalf("FATAL: Server failed to start: %v", err)
+	// 8. Start the HTTP server with explicit timeouts.
+	//
+	//    The zero-value server has none, which lets a client hold a
+	//    connection open indefinitely by trickling headers and exhaust the
+	//    connection pool. WriteTimeout has to exceed the judge's own
+	//    budget; hijacked WebSocket connections are exempt from it.
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      90 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
+
+	go func() {
+		log.Printf("Server starting on port %s", cfg.Port)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("FATAL: Server failed to start: %v", err)
+		}
+	}()
+
+	// 9. Shut down gracefully so in-flight requests finish and the
+	//    deferred cleanup above actually runs — router.Run would exit the
+	//    process before any of it.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	<-ctx.Done()
+
+	log.Println("Shutting down...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("WARNING: graceful shutdown failed: %v", err)
+	}
+	log.Println("Server stopped")
 }

@@ -1,6 +1,10 @@
 package judge
 
-import "context"
+import (
+	"context"
+	"log"
+	"time"
+)
 
 // Judge orchestrates compilation and execution of submissions against
 // test cases, delegating the actual compute to the injected Sandbox.
@@ -21,7 +25,20 @@ func (j *Judge) Evaluate(ctx context.Context, language, sourceCode string, testC
 	if err != nil {
 		return JudgeResult{}, err
 	}
-	defer sub.Close(ctx)
+
+	// Clean up on a context that outlives ctx. The container is started
+	// with `sleep infinity`, so it never exits by itself — and the cases
+	// where cleanup matters most (a timeout, a disconnected client) are
+	// exactly the cases where ctx is already cancelled and a removal call
+	// made with it would never reach the Docker daemon, leaking the
+	// container and its memory reservation forever.
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := sub.Close(cleanupCtx); err != nil {
+			log.Printf("WARNING: could not remove sandbox container: %v", err)
+		}
+	}()
 
 	// --- Compile step ---
 	compileResult, err := sub.Compile(ctx)
@@ -49,6 +66,11 @@ func (j *Judge) Evaluate(ctx context.Context, language, sourceCode string, testC
 			return JudgeResult{Verdict: VerdictTimeLimitExceeded, FailedCase: i}, nil
 		case result.OOMKilled:
 			return JudgeResult{Verdict: VerdictMemoryLimitExceeded, FailedCase: i}, nil
+		case result.OutputTruncated:
+			// The program printed more than the judge will hold. Its output
+			// is incomplete, so it cannot be compared — reject rather than
+			// risk a truncated prefix matching by accident.
+			return JudgeResult{Verdict: VerdictOutputLimitExceeded, FailedCase: i}, nil
 		case result.ExitCode != 0:
 			return JudgeResult{Verdict: VerdictRuntimeError, FailedCase: i}, nil
 		case !OutputsMatch(tc.ExpectedOutput, result.Stdout):

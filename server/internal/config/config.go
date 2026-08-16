@@ -24,7 +24,18 @@ type Config struct {
 	RabbitMQURL string // AMQP URL for the submission queue
 	RedisURL    string // Redis URL for caching, rate limits and pub/sub
 	WorkerCount int    // Concurrent judge slots per worker process
+
+	// SecureCookies marks the session cookie Secure, so the browser only
+	// ever sends it over HTTPS. It defaults to true: the insecure setting
+	// is the one that has to be asked for, and only local development
+	// over plain HTTP should ask.
+	SecureCookies bool
 }
+
+// minJWTSecretLength is the shortest signing key we accept. HS256 with a
+// low-entropy key can be brute-forced offline from a single captured
+// token, and recovering it means an attacker can mint admin tokens.
+const minJWTSecretLength = 32
 
 // Load reads the .env file and returns a populated Config struct.
 // It panics if any required variable is missing — this ensures
@@ -52,10 +63,34 @@ func Load() *Config {
 		RabbitMQURL: getEnvOrDefault("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
 		RedisURL:    getEnvOrDefault("REDIS_URL", "redis://localhost:6379/0"),
 		WorkerCount: getEnvAsIntOrDefault("WORKER_COUNT", 4),
+
+		SecureCookies: getEnvAsBoolOrDefault("SECURE_COOKIES", true),
 	}
 
-	// 3. Return the validated config
+	// 3. Refuse to start on a signing key weak enough to brute-force
+	if len(config.JWTSecret) < minJWTSecretLength {
+		log.Fatalf("FATAL: JWT_SECRET must be at least %d characters (got %d). "+
+			"Generate one with: openssl rand -base64 48", minJWTSecretLength, len(config.JWTSecret))
+	}
+
+	// 4. Return the validated config
 	return config
+}
+
+// getEnvAsBoolOrDefault reads a boolean environment variable. Anything
+// unparseable falls back to the default rather than silently reading as
+// false, which for a security flag would be the dangerous direction.
+func getEnvAsBoolOrDefault(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		log.Printf("Warning: %s=%q is not a boolean, using %t", key, value, defaultValue)
+		return defaultValue
+	}
+	return parsed
 }
 
 // getEnvOrPanic reads an environment variable by key.

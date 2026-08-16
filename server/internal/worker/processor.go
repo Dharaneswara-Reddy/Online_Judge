@@ -90,18 +90,30 @@ func (p *Processor) Process(ctx context.Context, job queue.Job) error {
 
 	// 3. Flag it as running so the client's poll shows progress
 	if err := p.submissions.MarkRunning(ctx, sub.ID); err != nil {
+		p.fail(ctx, sub, "could not start judging")
 		return fmt.Errorf("mark running: %w", err)
 	}
 
 	// 4. Evaluate inside the sandbox
 	result, err := p.evaluate(ctx, sub, prob, cases)
 	if err != nil {
+		// A cancelled context means the worker is shutting down, not that
+		// the submission is bad. Leave the record alone so a redelivery
+		// judges it properly rather than stamping a bogus runtime error on
+		// someone's correct solution.
+		if ctx.Err() != nil {
+			return fmt.Errorf("judging interrupted for submission %s: %w", sub.ID, ctx.Err())
+		}
 		p.fail(ctx, sub, "execution engine error")
 		return fmt.Errorf("evaluate submission %s: %w", sub.ID, err)
 	}
 
 	// 5. Record the verdict, then announce it
 	if err := p.submissions.MarkJudged(ctx, sub.ID, result); err != nil {
+		// Without this the record stays "running" forever, and because
+		// admission control counts non-terminal submissions the user would
+		// be refused every future submission from then on.
+		p.fail(ctx, sub, "could not record the verdict")
 		return fmt.Errorf("record verdict: %w", err)
 	}
 

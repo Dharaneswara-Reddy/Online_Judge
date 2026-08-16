@@ -86,8 +86,27 @@ func (s *Service) GetByIDs(ctx context.Context, ids []string) ([]Problem, error)
 	return s.repo.GetByIDs(ctx, ids)
 }
 
+// maxPageSize bounds any listing. Without it a single unauthenticated
+// request can ask for the entire collection, statements included.
+const maxPageSize = 100
+
+// clampPaging keeps pagination inside sane bounds. It lives in the
+// service rather than a controller so every caller inherits it.
+func clampPaging(filter ListFilter) ListFilter {
+	if filter.PageSize <= 0 {
+		filter.PageSize = 20
+	}
+	if filter.PageSize > maxPageSize {
+		filter.PageSize = maxPageSize
+	}
+	if filter.Page <= 0 {
+		filter.Page = 1
+	}
+	return filter
+}
+
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]Problem, error) {
-	return s.repo.List(ctx, filter)
+	return s.repo.List(ctx, clampPaging(filter))
 }
 
 // Count returns the total number of problems matching the filter,
