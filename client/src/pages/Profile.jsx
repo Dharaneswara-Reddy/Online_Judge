@@ -23,6 +23,7 @@ const STATUS_LABELS = {
   mle: "Memory Limit Exceeded",
   runtime_error: "Runtime Error",
   compile_error: "Compile Error",
+  output_limit_exceeded: "Output Limit Exceeded",
 };
 
 const PAGE_SIZE = 10;

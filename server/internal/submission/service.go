@@ -180,6 +180,8 @@ func StatusFromVerdict(v judge.Verdict) Status {
 		return StatusMLE
 	case judge.VerdictCompileError:
 		return StatusCompileError
+	case judge.VerdictOutputLimitExceeded:
+		return StatusOutputLimitExceeded
 	default:
 		return StatusRuntimeError
 	}

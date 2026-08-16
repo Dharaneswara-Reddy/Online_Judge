@@ -25,6 +25,7 @@ const VERDICT_DISPLAY = {
   mle: { label: "Memory Limit Exceeded", class: "verdict-mle", icon: "📦" },
   runtime_error: { label: "Runtime Error", class: "verdict-re", icon: "💥" },
   compile_error: { label: "Compile Error", class: "verdict-ce", icon: "⚠" },
+  output_limit_exceeded: { label: "Output Limit Exceeded", class: "verdict-mle", icon: "🌊" },
 };
 
 export default function ProblemDetail() {

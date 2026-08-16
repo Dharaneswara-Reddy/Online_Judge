@@ -16,6 +16,13 @@ import (
 
 const judgeImage = "codearena-sandbox:latest"
 
+// Setup budgets, kept separate from the problem's own time limit so
+// infrastructure latency is never charged to the user's program.
+const (
+	sourceWriteTimeout = 30 * time.Second
+	compileTimeout     = 15 * time.Second
+)
+
 // DockerSandbox implements the Sandbox interface using real Docker
 // containers for isolated code execution.
 type DockerSandbox struct{ cli *client.Client }
@@ -97,8 +104,17 @@ type dockerSubmission struct {
 }
 
 // writeSource writes the source code into the container's working directory.
+//
+// It gets its own fixed budget rather than the problem's time limit.
+// Copying a file is setup, not the user's program: charging it against a
+// 1s limit meant that under load — when Docker's exec round trips slow
+// down — the copy timed out and a correct solution was reported as an
+// execution failure.
 func (s *dockerSubmission) writeSource(ctx context.Context, sourceCode string) error {
-	res, err := s.exec(ctx, []string{"sh", "-c", fmt.Sprintf("cat > %s", s.lang.SourceFile)}, sourceCode)
+	writeCtx, cancel := context.WithTimeout(ctx, sourceWriteTimeout)
+	defer cancel()
+
+	res, err := s.execWithCtx(writeCtx, []string{"sh", "-c", fmt.Sprintf("cat > %s", s.lang.SourceFile)}, sourceCode)
 	if err != nil {
 		return fmt.Errorf("write source: %w", err)
 	}
@@ -114,8 +130,10 @@ func (s *dockerSubmission) Compile(ctx context.Context) (ExecuteResult, error) {
 	if s.lang.CompileCmd == nil {
 		return ExecuteResult{ExitCode: 0}, nil
 	}
-	// Give compilers up to 15 seconds to finish building
-	compileCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// Give compilers up to 15 seconds, but stay cancellable: deriving
+	// from context.Background() meant an abandoned evaluation still
+	// burned the full 15s and held its container.
+	compileCtx, cancel := context.WithTimeout(ctx, compileTimeout)
 	defer cancel()
 
 	return s.execWithCtx(compileCtx, s.lang.CompileCmd, "")

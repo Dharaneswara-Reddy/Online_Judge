@@ -24,6 +24,9 @@ const (
 	StatusMLE          Status = "mle"
 	StatusRuntimeError Status = "runtime_error"
 	StatusCompileError Status = "compile_error"
+	// StatusOutputLimitExceeded means the program printed more than the
+	// judge will buffer, so its output could not be compared.
+	StatusOutputLimitExceeded Status = "output_limit_exceeded"
 )
 
 // IsTerminal reports whether the status is a final verdict, meaning the

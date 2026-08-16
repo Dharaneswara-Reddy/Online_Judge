@@ -26,6 +26,7 @@ const TERMINAL_STATUSES = new Set([
   "mle",
   "runtime_error",
   "compile_error",
+  "output_limit_exceeded",
 ]);
 
 export function isTerminalStatus(status) {

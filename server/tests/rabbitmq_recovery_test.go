@@ -24,6 +24,10 @@ import (
 // green on a machine without Docker. Start one with:
 //
 //	docker compose up -d
+//
+// Note: they consume the real lane queues, so a judge worker running
+// against the same broker will compete for their messages and make them
+// fail. Stop any local worker before running the suite.
 const brokerURL = "amqp://guest:guest@localhost:5672/"
 
 // requireBroker skips the test unless a broker is actually reachable.
