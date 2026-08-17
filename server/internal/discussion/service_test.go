@@ -115,9 +115,9 @@ func TestListThreads_NestsRepliesUnderTheirParent(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	threads, err := svc.ListThreads(ctx, "problem-1", "")
-
+	page, err := svc.ListThreads(ctx, "problem-1", "")
 	require.NoError(t, err)
+	threads := page.Threads
 	require.Len(t, threads, 2, "only top-level comments are threads")
 	// Newest first.
 	assert.Equal(t, second.ID, threads[0].ID)
@@ -130,10 +130,10 @@ func TestListThreads_NestsRepliesUnderTheirParent(t *testing.T) {
 func TestListThreads_UnknownProblemIsEmptyNotAnError(t *testing.T) {
 	svc := newService()
 
-	threads, err := svc.ListThreads(context.Background(), "no-such-problem", "")
-
+	page, err := svc.ListThreads(context.Background(), "no-such-problem", "")
 	require.NoError(t, err)
-	assert.Empty(t, threads)
+	assert.Empty(t, page.Threads)
+	assert.False(t, page.HasMore)
 }
 
 // --- Voting ---
@@ -184,13 +184,13 @@ func TestListThreads_MarksTheViewersOwnVotes(t *testing.T) {
 
 	forVoter, err := svc.ListThreads(ctx, "problem-1", "user-2")
 	require.NoError(t, err)
-	require.Len(t, forVoter, 1)
-	assert.True(t, forVoter[0].UpvotedByMe)
+	require.Len(t, forVoter.Threads, 1)
+	assert.True(t, forVoter.Threads[0].UpvotedByMe)
 
 	forOther, err := svc.ListThreads(ctx, "problem-1", "user-9")
 	require.NoError(t, err)
-	assert.False(t, forOther[0].UpvotedByMe)
-	assert.Nil(t, forOther[0].UpvotedBy, "the voter list is never exposed")
+	assert.False(t, forOther.Threads[0].UpvotedByMe)
+	assert.Nil(t, forOther.Threads[0].UpvotedBy, "the voter list is never exposed")
 }
 
 func TestUpvote_UnknownCommentReturnsNotFound(t *testing.T) {
@@ -214,8 +214,9 @@ func TestDelete_RemovesOwnCommentButKeepsTheThread(t *testing.T) {
 
 	require.NoError(t, svc.Delete(ctx, parent.ID, "user-1", false))
 
-	threads, err := svc.ListThreads(ctx, "problem-1", "")
+	page, err := svc.ListThreads(ctx, "problem-1", "")
 	require.NoError(t, err)
+	threads := page.Threads
 	require.Len(t, threads, 1, "the thread survives so its replies stay readable")
 	assert.True(t, threads[0].Deleted)
 	assert.Empty(t, threads[0].Content)

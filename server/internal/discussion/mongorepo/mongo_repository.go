@@ -51,23 +51,84 @@ func (r *MongoRepository) GetByID(ctx context.Context, id string) (*discussion.C
 	return &c, nil
 }
 
-func (r *MongoRepository) ListForProblem(ctx context.Context, problemID string) ([]discussion.Comment, error) {
-	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}})
+// rootFilter matches top-level comments. ParentID is stored with
+// omitempty, so a root has no parent_id field at all — older documents
+// may carry an empty string instead, and both must match.
+func rootFilter(problemID string) bson.M {
+	return bson.M{
+		"problem_id": problemID,
+		"$or": []bson.M{
+			{"parent_id": bson.M{"$exists": false}},
+			{"parent_id": ""},
+		},
+	}
+}
 
-	cursor, err := r.comments.Find(ctx, bson.M{"problem_id": problemID}, opts)
+// ListRoots returns one page of top-level comments, newest first.
+//
+// Ordering is (created_at, _id) descending. The id is part of the sort,
+// not decoration: timestamps collide, and without a unique tie-break the
+// boundary between pages is ambiguous, which shows up as a comment
+// appearing twice or not at all.
+func (r *MongoRepository) ListRoots(ctx context.Context, problemID string, after *discussion.Cursor, limit int) ([]discussion.Comment, error) {
+	filter := rootFilter(problemID)
+
+	if after != nil {
+		oid, err := bson.ObjectIDFromHex(after.ID)
+		if err != nil {
+			return nil, discussion.ErrInvalidCursor
+		}
+		// Strictly past the cursor in the sort order.
+		filter["$and"] = []bson.M{{
+			"$or": []bson.M{
+				{"created_at": bson.M{"$lt": after.CreatedAt}},
+				{"created_at": after.CreatedAt, "_id": bson.M{"$lt": oid}},
+			},
+		}}
+	}
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}).
+		SetLimit(int64(limit))
+
+	cursor, err := r.comments.Find(ctx, filter, opts)
 	if err != nil {
-		return nil, fmt.Errorf("list comments: %w", err)
+		return nil, fmt.Errorf("list root comments: %w", err)
 	}
 	defer cursor.Close(ctx)
 
 	var comments []discussion.Comment
 	if err := cursor.All(ctx, &comments); err != nil {
-		return nil, fmt.Errorf("decode comments: %w", err)
+		return nil, fmt.Errorf("decode root comments: %w", err)
 	}
 	if comments == nil {
 		comments = []discussion.Comment{}
 	}
 	return comments, nil
+}
+
+// ListReplies fetches the replies for one page of parents, oldest first.
+func (r *MongoRepository) ListReplies(ctx context.Context, parentIDs []string) ([]discussion.Comment, error) {
+	if len(parentIDs) == 0 {
+		return []discussion.Comment{}, nil
+	}
+
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
+
+	cursor, err := r.comments.Find(ctx, bson.M{"parent_id": bson.M{"$in": parentIDs}}, opts)
+	if err != nil {
+		return nil, fmt.Errorf("list replies: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var replies []discussion.Comment
+	if err := cursor.All(ctx, &replies); err != nil {
+		return nil, fmt.Errorf("decode replies: %w", err)
+	}
+	if replies == nil {
+		replies = []discussion.Comment{}
+	}
+	return replies, nil
 }
 
 // SetUpvote adds or removes a voter using $addToSet / $pull, which are

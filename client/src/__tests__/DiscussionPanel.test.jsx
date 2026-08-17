@@ -44,19 +44,23 @@ function thread(overrides = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  fetchDiscussions.mockResolvedValue([]);
+  fetchDiscussions.mockResolvedValue({ threads: [], nextCursor: null, hasMore: false });
 });
 
 describe('DiscussionPanel', () => {
   it('renders replies nested under their parent comment', async () => {
-    fetchDiscussions.mockResolvedValue([
-      thread({
-        replies: [{
-          id: 'r1', userId: 'user-2', username: 'bob', content: 'That helped, thanks.',
-          upvotes: 0, upvotedByMe: false, createdAt: '2026-08-01T11:00:00Z',
-        }],
-      }),
-    ]);
+    fetchDiscussions.mockResolvedValue({
+      threads: [
+        thread({
+          replies: [{
+            id: 'r1', userId: 'user-2', username: 'bob', content: 'That helped, thanks.',
+            upvotes: 0, upvotedByMe: false, createdAt: '2026-08-01T11:00:00Z',
+          }],
+        }),
+      ],
+      nextCursor: null,
+      hasMore: false,
+    });
 
     render(<DiscussionPanel slug="two-sum" currentUser={AUTHOR} />);
 
@@ -74,7 +78,7 @@ describe('DiscussionPanel', () => {
   });
 
   it('invites anonymous readers to sign in instead of showing a composer', async () => {
-    fetchDiscussions.mockResolvedValue([thread()]);
+    fetchDiscussions.mockResolvedValue({ threads: [thread()], nextCursor: null, hasMore: false });
 
     render(<DiscussionPanel slug="two-sum" currentUser={null} />);
 
@@ -83,7 +87,7 @@ describe('DiscussionPanel', () => {
   });
 
   it('updates the vote count in place without refetching the thread', async () => {
-    fetchDiscussions.mockResolvedValue([thread()]);
+    fetchDiscussions.mockResolvedValue({ threads: [thread()], nextCursor: null, hasMore: false });
     setUpvote.mockResolvedValue({ upvotes: 3, upvotedByMe: true });
 
     render(<DiscussionPanel slug="two-sum" currentUser={AUTHOR} />);
@@ -99,7 +103,7 @@ describe('DiscussionPanel', () => {
   });
 
   it('withdraws a vote that is already cast', async () => {
-    fetchDiscussions.mockResolvedValue([thread({ upvotes: 1, upvotedByMe: true })]);
+    fetchDiscussions.mockResolvedValue({ threads: [thread({ upvotes: 1, upvotedByMe: true })], nextCursor: null, hasMore: false });
     setUpvote.mockResolvedValue({ upvotes: 0, upvotedByMe: false });
 
     render(<DiscussionPanel slug="two-sum" currentUser={AUTHOR} />);
@@ -149,7 +153,7 @@ describe('DiscussionPanel', () => {
   });
 
   it('offers Delete only on your own comments', async () => {
-    fetchDiscussions.mockResolvedValue([thread({ userId: 'someone-else', username: 'bob' })]);
+    fetchDiscussions.mockResolvedValue({ threads: [thread({ userId: 'someone-else', username: 'bob' })], nextCursor: null, hasMore: false });
 
     render(<DiscussionPanel slug="two-sum" currentUser={AUTHOR} />);
     await screen.findByText('Use a hash map for O(n).');
@@ -158,7 +162,7 @@ describe('DiscussionPanel', () => {
   });
 
   it('lets an admin moderate anyone', async () => {
-    fetchDiscussions.mockResolvedValue([thread({ userId: 'someone-else', username: 'bob' })]);
+    fetchDiscussions.mockResolvedValue({ threads: [thread({ userId: 'someone-else', username: 'bob' })], nextCursor: null, hasMore: false });
     deleteComment.mockResolvedValue();
 
     render(<DiscussionPanel slug="two-sum" currentUser={{ id: 'mod', role: 'admin' }} />);
@@ -170,20 +174,111 @@ describe('DiscussionPanel', () => {
   });
 
   it('renders a removed comment as a tombstone so its replies keep their place', async () => {
-    fetchDiscussions.mockResolvedValue([
-      thread({
-        deleted: true,
-        content: '',
-        replies: [{
-          id: 'r1', userId: 'user-2', username: 'bob', content: 'Still visible.',
-          upvotes: 0, upvotedByMe: false, createdAt: '2026-08-01T11:00:00Z',
-        }],
-      }),
-    ]);
+    fetchDiscussions.mockResolvedValue({
+      threads: [
+        thread({
+          deleted: true,
+          content: '',
+          replies: [{
+            id: 'r1', userId: 'user-2', username: 'bob', content: 'Still visible.',
+            upvotes: 0, upvotedByMe: false, createdAt: '2026-08-01T11:00:00Z',
+          }],
+        }),
+      ],
+      nextCursor: null,
+      hasMore: false,
+    });
 
     render(<DiscussionPanel slug="two-sum" currentUser={AUTHOR} />);
 
     expect(await screen.findByText(/comment removed/i)).toBeInTheDocument();
     expect(screen.getByText('Still visible.')).toBeInTheDocument();
+  });
+});
+
+// --- Pagination ---
+
+describe('DiscussionPanel pagination', () => {
+  it('offers Load more only while another page exists', async () => {
+    fetchDiscussions.mockResolvedValue({
+      threads: [thread()], nextCursor: 'CURSOR1', hasMore: true,
+    });
+
+    render(<DiscussionPanel slug="two-sum" currentUser={AUTHOR} />);
+    await screen.findByText('Use a hash map for O(n).');
+
+    expect(screen.getByRole('button', { name: /load more/i })).toBeInTheDocument();
+    expect(screen.queryByText(/end of the thread/i)).not.toBeInTheDocument();
+  });
+
+  it('marks the end of the thread when there is no next page', async () => {
+    fetchDiscussions.mockResolvedValue({
+      threads: [thread()], nextCursor: null, hasMore: false,
+    });
+
+    render(<DiscussionPanel slug="two-sum" currentUser={AUTHOR} />);
+    await screen.findByText('Use a hash map for O(n).');
+
+    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/end of the thread/i)).toBeInTheDocument();
+  });
+
+  it('appends the next page and keeps what is already on screen', async () => {
+    fetchDiscussions
+      .mockResolvedValueOnce({ threads: [thread()], nextCursor: 'CURSOR1', hasMore: true })
+      .mockResolvedValueOnce({
+        threads: [thread({ id: 'c2', content: 'A later comment.' })],
+        nextCursor: null,
+        hasMore: false,
+      });
+
+    render(<DiscussionPanel slug="two-sum" currentUser={AUTHOR} />);
+    await screen.findByText('Use a hash map for O(n).');
+
+    await userEvent.click(screen.getByRole('button', { name: /load more/i }));
+
+    expect(await screen.findByText('A later comment.')).toBeInTheDocument();
+    expect(screen.getByText('Use a hash map for O(n).')).toBeInTheDocument();
+    // The cursor from the first page must be sent back verbatim.
+    expect(fetchDiscussions).toHaveBeenLastCalledWith('two-sum', { cursor: 'CURSOR1' });
+  });
+
+  it('does not duplicate a comment returned on both pages', async () => {
+    fetchDiscussions
+      .mockResolvedValueOnce({ threads: [thread()], nextCursor: 'CURSOR1', hasMore: true })
+      .mockResolvedValueOnce({ threads: [thread()], nextCursor: null, hasMore: false });
+
+    render(<DiscussionPanel slug="two-sum" currentUser={AUTHOR} />);
+    await screen.findByText('Use a hash map for O(n).');
+
+    await userEvent.click(screen.getByRole('button', { name: /load more/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
+    );
+    expect(screen.getAllByText('Use a hash map for O(n).')).toHaveLength(1);
+  });
+
+  it('surfaces a failure to load more without losing the first page', async () => {
+    fetchDiscussions
+      .mockResolvedValueOnce({ threads: [thread()], nextCursor: 'CURSOR1', hasMore: true })
+      .mockRejectedValueOnce(new Error('network down'));
+
+    render(<DiscussionPanel slug="two-sum" currentUser={AUTHOR} />);
+    await screen.findByText('Use a hash map for O(n).');
+
+    await userEvent.click(screen.getByRole('button', { name: /load more/i }));
+
+    expect(await screen.findByText(/could not load more comments/i)).toBeInTheDocument();
+    expect(screen.getByText('Use a hash map for O(n).')).toBeInTheDocument();
+  });
+
+  it('requests the first page without a cursor', async () => {
+    fetchDiscussions.mockResolvedValue({ threads: [], nextCursor: null, hasMore: false });
+
+    render(<DiscussionPanel slug="two-sum" currentUser={AUTHOR} />);
+    await screen.findByText(/no comments yet/i);
+
+    expect(fetchDiscussions).toHaveBeenCalledWith('two-sum');
   });
 });

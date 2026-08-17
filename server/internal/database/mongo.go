@@ -253,6 +253,17 @@ func EnsureIndexes(db *mongo.Database) error {
 		{
 			Keys: bson.D{{Key: "parent_id", Value: 1}},
 		},
+		// Serves the paginated root query: the filter and the full sort
+		// key are both in the index, so a page is an index range scan
+		// rather than a fetch-and-sort of the whole thread.
+		{
+			Keys: bson.D{
+				{Key: "problem_id", Value: 1},
+				{Key: "parent_id", Value: 1},
+				{Key: "created_at", Value: -1},
+				{Key: "_id", Value: -1},
+			},
+		},
 	}
 	_, err = discussionsColl.Indexes().CreateMany(ctx, discussionIndexes)
 	if err != nil {

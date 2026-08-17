@@ -2,7 +2,6 @@ package discussion
 
 import (
 	"context"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -83,40 +82,70 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*Comment, erro
 // viewerID marks which comments the caller has already upvoted so the UI
 // can render the vote control correctly; pass an empty string for an
 // anonymous reader.
-func (s *Service) ListThreads(ctx context.Context, problemID, viewerID string) ([]Comment, error) {
-	all, err := s.repo.ListForProblem(ctx, problemID)
+func (s *Service) ListThreads(ctx context.Context, problemID, viewerID string) (Page, error) {
+	return s.ListThreadPage(ctx, problemID, viewerID, "", DefaultPageSize)
+}
+
+// ListThreadPage returns one page of a problem's discussion: top-level
+// comments newest first, each with its replies oldest first.
+//
+// Only the roots are paginated. Replies are fetched for the roots on this
+// page alone, so both queries stay bounded by the page size and a popular
+// thread can never be pulled into memory whole.
+func (s *Service) ListThreadPage(ctx context.Context, problemID, viewerID, encodedCursor string, limit int) (Page, error) {
+	after, err := DecodeCursor(encodedCursor)
 	if err != nil {
-		return nil, err
+		return Page{}, err
+	}
+	limit = ClampPageSize(limit)
+
+	// Ask for one extra row: if it comes back there is another page, and
+	// we learn that without a second count query.
+	roots, err := s.repo.ListRoots(ctx, problemID, after, limit+1)
+	if err != nil {
+		return Page{}, err
 	}
 
-	// Index replies by their parent in one pass.
-	repliesByParent := make(map[string][]Comment)
-	var roots []Comment
-	for _, c := range all {
-		c.UpvotedByMe = viewerID != "" && contains(c.UpvotedBy, viewerID)
-		c.UpvotedBy = nil // never leak the voter list to clients
-		if c.IsReply() {
-			repliesByParent[c.ParentID] = append(repliesByParent[c.ParentID], c)
-		} else {
-			roots = append(roots, c)
-		}
+	hasMore := len(roots) > limit
+	if hasMore {
+		roots = roots[:limit]
 	}
 
-	// Newest discussions first; replies read naturally oldest first.
-	sort.SliceStable(roots, func(i, j int) bool {
-		return roots[i].CreatedAt.After(roots[j].CreatedAt)
-	})
+	if len(roots) == 0 {
+		return Page{Threads: []Comment{}, HasMore: false}, nil
+	}
+
+	parentIDs := make([]string, 0, len(roots))
+	for _, root := range roots {
+		parentIDs = append(parentIDs, root.ID)
+	}
+
+	replies, err := s.repo.ListReplies(ctx, parentIDs)
+	if err != nil {
+		return Page{}, err
+	}
+
+	repliesByParent := make(map[string][]Comment, len(roots))
+	for _, reply := range replies {
+		reply.UpvotedByMe = viewerID != "" && contains(reply.UpvotedBy, viewerID)
+		reply.UpvotedBy = nil // never leak the voter list to clients
+		repliesByParent[reply.ParentID] = append(repliesByParent[reply.ParentID], reply)
+	}
 
 	threads := make([]Comment, 0, len(roots))
 	for _, root := range roots {
-		replies := repliesByParent[root.ID]
-		sort.SliceStable(replies, func(i, j int) bool {
-			return replies[i].CreatedAt.Before(replies[j].CreatedAt)
-		})
-		root.Replies = replies
+		root.UpvotedByMe = viewerID != "" && contains(root.UpvotedBy, viewerID)
+		root.UpvotedBy = nil
+		root.Replies = repliesByParent[root.ID]
 		threads = append(threads, root)
 	}
-	return threads, nil
+
+	page := Page{Threads: threads, HasMore: hasMore}
+	if hasMore {
+		last := threads[len(threads)-1]
+		page.NextCursor = Cursor{CreatedAt: last.CreatedAt, ID: last.ID}.Encode()
+	}
+	return page, nil
 }
 
 // Upvote records a user's vote and returns the new count. Voting is

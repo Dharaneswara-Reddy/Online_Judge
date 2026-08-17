@@ -3,6 +3,7 @@ package controllers
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -32,13 +33,27 @@ func (dc *DiscussionController) ListForProblem(c *gin.Context) {
 		return
 	}
 
-	threads, err := dc.discussions.ListThreads(c.Request.Context(), prob.ID, c.GetString("userID"))
+	limit, _ := strconv.Atoi(c.Query("limit"))
+
+	page, err := dc.discussions.ListThreadPage(
+		c.Request.Context(), prob.ID, c.GetString("userID"), c.Query("cursor"), limit)
 	if err != nil {
+		if errors.Is(err, discussion.ErrInvalidCursor) {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid pagination cursor"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to load discussion"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": threads})
+	// `data` keeps its existing shape so an older client still works; the
+	// pagination fields are additive.
+	c.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"data":       page.Threads,
+		"nextCursor": page.NextCursor,
+		"hasMore":    page.HasMore,
+	})
 }
 
 // Create handles POST /api/problems/:slug/discussions (authenticated).

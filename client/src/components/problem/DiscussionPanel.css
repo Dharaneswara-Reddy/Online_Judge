@@ -155,3 +155,16 @@
 .discussion-danger:hover {
   color: var(--error);
 }
+
+.discussion-more {
+  align-self: center;
+  padding: 7px 18px;
+  font-size: 0.8rem;
+}
+
+.discussion-end {
+  margin: 0;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}

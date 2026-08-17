@@ -20,22 +20,55 @@ export default function DiscussionPanel({ slug, currentUser }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // Pagination state. `cursor` is opaque — it is only ever handed back to
+  // the API, never parsed here.
+  const [cursor, setCursor] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+
   const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
   const [replyTo, setReplyTo] = useState(null);
   const [replyDraft, setReplyDraft] = useState("");
 
+  // Reload from the top. Used on mount and after any write, since a new
+  // comment belongs at the newest end of the thread.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setThreads(await fetchDiscussions(slug));
+      const page = await fetchDiscussions(slug);
+      setThreads(page.threads);
+      setCursor(page.nextCursor);
+      setHasMore(page.hasMore);
     } catch {
       setError("Could not load the discussion.");
     } finally {
       setLoading(false);
     }
   }, [slug]);
+
+  // Append the next page, keeping what is already on screen.
+  const loadMore = useCallback(async () => {
+    if (!cursor || loadingMore) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const page = await fetchDiscussions(slug, { cursor });
+      setThreads((current) => {
+        // Guard against a comment arriving twice if the thread shifted
+        // between requests.
+        const seen = new Set(current.map((t) => t.id));
+        return [...current, ...page.threads.filter((t) => !seen.has(t.id))];
+      });
+      setCursor(page.nextCursor);
+      setHasMore(page.hasMore);
+    } catch {
+      setError("Could not load more comments.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [slug, cursor, loadingMore]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -189,6 +222,20 @@ export default function DiscussionPanel({ slug, currentUser }) {
             </li>
           ))}
         </ul>
+      )}
+
+      {hasMore && (
+        <button
+          className="btn btn-ghost discussion-more"
+          onClick={loadMore}
+          disabled={loadingMore}
+        >
+          {loadingMore ? "Loading…" : "Load more comments"}
+        </button>
+      )}
+
+      {!hasMore && threads.length > 0 && (
+        <p className="discussion-end">You have reached the end of the thread.</p>
       )}
     </div>
   );

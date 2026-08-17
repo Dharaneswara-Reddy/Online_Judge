@@ -1,9 +1,23 @@
 import api from "./axios";
 
-/** Fetch a problem's discussion as threads with nested replies. */
-export async function fetchDiscussions(slug) {
-  const { data } = await api.get(`/problems/${slug}/discussions`);
-  return data.data ?? [];
+/**
+ * Fetch one page of a problem's discussion.
+ *
+ * Threads are returned newest first with their replies nested. Pass the
+ * `nextCursor` from a previous response to fetch the following page; the
+ * cursor is opaque and should only ever be handed back unchanged.
+ */
+export async function fetchDiscussions(slug, { cursor, limit } = {}) {
+  const params = {};
+  if (cursor) params.cursor = cursor;
+  if (limit) params.limit = limit;
+
+  const { data } = await api.get(`/problems/${slug}/discussions`, { params });
+  return {
+    threads: data.data ?? [],
+    nextCursor: data.nextCursor ?? null,
+    hasMore: Boolean(data.hasMore),
+  };
 }
 
 /** Post a comment, or a reply when parentId is supplied. */

@@ -4,6 +4,7 @@ package discussiontest
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"sync"
 
@@ -43,16 +44,66 @@ func (r *FakeRepository) GetByID(_ context.Context, id string) (*discussion.Comm
 	return &clone, nil
 }
 
-func (r *FakeRepository) ListForProblem(_ context.Context, problemID string) ([]discussion.Comment, error) {
+// ListRoots mirrors the Mongo query: top-level comments only, newest
+// first by (createdAt, id), bounded by limit, starting past the cursor.
+func (r *FakeRepository) ListRoots(_ context.Context, problemID string, after *discussion.Cursor, limit int) ([]discussion.Comment, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	roots := []discussion.Comment{}
+	for _, c := range r.comments {
+		if c.ProblemID == problemID && !c.IsReply() {
+			roots = append(roots, *c)
+		}
+	}
+
+	sort.Slice(roots, func(i, j int) bool {
+		if roots[i].CreatedAt.Equal(roots[j].CreatedAt) {
+			return roots[i].ID > roots[j].ID
+		}
+		return roots[i].CreatedAt.After(roots[j].CreatedAt)
+	})
+
+	if after != nil {
+		filtered := roots[:0:0]
+		for _, c := range roots {
+			past := c.CreatedAt.Before(after.CreatedAt) ||
+				(c.CreatedAt.Equal(after.CreatedAt) && c.ID < after.ID)
+			if past {
+				filtered = append(filtered, c)
+			}
+		}
+		roots = filtered
+	}
+
+	if limit > 0 && len(roots) > limit {
+		roots = roots[:limit]
+	}
+	return roots, nil
+}
+
+// ListReplies returns replies for the given parents, oldest first.
+func (r *FakeRepository) ListReplies(_ context.Context, parentIDs []string) ([]discussion.Comment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	wanted := make(map[string]bool, len(parentIDs))
+	for _, id := range parentIDs {
+		wanted[id] = true
+	}
+
 	out := []discussion.Comment{}
 	for _, c := range r.comments {
-		if c.ProblemID == problemID {
+		if c.IsReply() && wanted[c.ParentID] {
 			out = append(out, *c)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
 	return out, nil
 }
 
