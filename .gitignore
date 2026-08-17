@@ -42,3 +42,8 @@ CLAUDE.md
 AGENTS.md
 GEMINI.md
 .mcp.json
+
+# Production deployment secrets (host-only)
+deploy/.env
+deploy/*.pem
+*.pem
