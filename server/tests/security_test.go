@@ -17,6 +17,7 @@ import (
 	"github.com/toji339/online-judge/internal/controllers"
 	"github.com/toji339/online-judge/internal/judge"
 	"github.com/toji339/online-judge/internal/middleware"
+	"github.com/toji339/online-judge/internal/playground"
 	"github.com/toji339/online-judge/internal/problem"
 	problemmongo "github.com/toji339/online-judge/internal/problem/mongorepo"
 	"github.com/toji339/online-judge/internal/ratelimit"
@@ -43,7 +44,7 @@ func TestPlayground_ClampsClientSuppliedMemoryLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	sandbox := &recordingSandbox{}
 	router := gin.New()
-	router.POST("/api/judge/run", controllers.NewJudgeController(sandbox).RunCode)
+	router.POST("/api/judge/run", controllers.NewJudgeController(playground.NewLocalRunner(sandbox)).RunCode)
 
 	body := `{"language":"python","code":"print(1)","memory_limit_mb":65536,"time_limit_ms":600000}`
 	req := httptest.NewRequest(http.MethodPost, "/api/judge/run", strings.NewReader(body))
@@ -62,7 +63,7 @@ func TestPlayground_HonoursASmallerRequestedLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	sandbox := &recordingSandbox{}
 	router := gin.New()
-	router.POST("/api/judge/run", controllers.NewJudgeController(sandbox).RunCode)
+	router.POST("/api/judge/run", controllers.NewJudgeController(playground.NewLocalRunner(sandbox)).RunCode)
 
 	body := `{"language":"python","code":"print(1)","memory_limit_mb":64,"time_limit_ms":500}`
 	req := httptest.NewRequest(http.MethodPost, "/api/judge/run", strings.NewReader(body))
@@ -78,7 +79,7 @@ func TestPlayground_HonoursASmallerRequestedLimit(t *testing.T) {
 func TestPlayground_RejectsAFloodOfTestCases(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.POST("/api/judge/run", controllers.NewJudgeController(&recordingSandbox{}).RunCode)
+	router.POST("/api/judge/run", controllers.NewJudgeController(playground.NewLocalRunner(&recordingSandbox{})).RunCode)
 
 	cases := make([]string, 500)
 	for i := range cases {

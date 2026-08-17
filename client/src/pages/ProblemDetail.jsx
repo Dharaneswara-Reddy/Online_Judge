@@ -31,6 +31,10 @@ const VERDICT_DISPLAY = {
   runtime_error: { label: "Runtime Error", class: "verdict-re", icon: "💥" },
   compile_error: { label: "Compile Error", class: "verdict-ce", icon: "⚠" },
   output_limit_exceeded: { label: "Output Limit Exceeded", class: "verdict-mle", icon: "🌊" },
+  // Not a verdict: the judge could not be reached or failed before it
+  // ever ran the code. Reporting this as a Runtime Error would blame the
+  // user's program for an infrastructure problem.
+  error: { label: "Could Not Judge", class: "verdict-re", icon: "⚠" },
 };
 
 export default function ProblemDetail() {
@@ -112,7 +116,13 @@ export default function ProblemDetail() {
       const data = await runCode({ language, code, stdin });
       setRunResult(data);
     } catch (err) {
-      setRunResult({ stdout: "", stderr: err?.response?.data?.message ?? "Execution failed.", exitCode: 1 });
+      setRunResult({
+        stdout: "",
+        stderr:
+          err?.response?.data?.message ??
+          "Could not reach the judge. Your code was not run — please try again.",
+        exitCode: 1,
+      });
     } finally {
       setIsRunning(false);
     }
@@ -139,8 +149,10 @@ export default function ProblemDetail() {
       }
     } catch (err) {
       setSubmitResult({
-        status: "runtime_error",
-        compileError: err?.response?.data?.message ?? "Submission failed.",
+        status: "error",
+        compileError:
+          err?.response?.data?.message ??
+          "Could not reach the judge. Your code was not run — please try again.",
       });
     } finally {
       setIsSubmitting(false);

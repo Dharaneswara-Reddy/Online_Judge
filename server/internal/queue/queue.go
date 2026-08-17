@@ -72,3 +72,37 @@ type Consumer interface {
 	Consume(ctx context.Context, lane Lane, prefetch int, handler Handler) error
 	Close() error
 }
+
+// --- Synchronous calls ---
+//
+// Judging is asynchronous, but the playground "Run" button is not: the
+// caller is a browser waiting on an HTTP response. The API cannot run the
+// code itself in production — it has no access to the Docker daemon, on
+// purpose, because it is the only internet-facing process — so it asks a
+// worker and waits for the reply.
+//
+// This stays deliberately untyped at the queue layer. The queue package
+// knows how to carry bytes and match a reply to its request; what those
+// bytes mean belongs to the caller.
+
+// ErrNoWorker is returned when no worker answered before the deadline.
+// The request may have been dropped unexecuted, or executed with nobody
+// left to hear the answer — so callers must treat a call as at-most-once
+// and never as a completed side effect.
+var ErrNoWorker = errors.New("no judge worker answered in time")
+
+// RPCHandler answers one call. The bytes it returns are sent back to the
+// waiting caller; an error is reported to the caller as a failed call.
+type RPCHandler func(ctx context.Context, payload []byte) ([]byte, error)
+
+// Caller makes a synchronous request and waits for one reply. The
+// context deadline bounds the wait.
+type Caller interface {
+	Call(ctx context.Context, payload []byte) ([]byte, error)
+}
+
+// Responder serves synchronous calls until the context is cancelled,
+// running up to concurrency handlers at once.
+type Responder interface {
+	Respond(ctx context.Context, concurrency int, handler RPCHandler) error
+}

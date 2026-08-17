@@ -21,6 +21,7 @@ import (
 	"github.com/toji339/online-judge/internal/config"
 	"github.com/toji339/online-judge/internal/database"
 	"github.com/toji339/online-judge/internal/judge"
+	"github.com/toji339/online-judge/internal/playground"
 	"github.com/toji339/online-judge/internal/problem"
 	problemmongo "github.com/toji339/online-judge/internal/problem/mongorepo"
 	"github.com/toji339/online-judge/internal/queue"
@@ -98,6 +99,18 @@ func main() {
 			}
 		}(lane)
 	}
+
+	// Playground runs are synchronous and answered on a separate queue.
+	// They are served here because this process owns a sandbox and the
+	// API deliberately does not: giving the internet-facing API access to
+	// the Docker daemon would make an HTTP-layer bug host root.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := broker.Respond(ctx, cfg.WorkerCount, playground.Handler(playground.NewLocalRunner(sandbox))); err != nil && ctx.Err() == nil {
+			log.Printf("rabbitmq: playground responder gave up: %v", err)
+		}
+	}()
 
 	log.Printf("Judge worker started with %d concurrent slots per lane", cfg.WorkerCount)
 

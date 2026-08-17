@@ -58,6 +58,9 @@ func main() {
 	} else {
 		defer broker.Close()
 		deps.Publisher = broker
+		// The same connection also carries synchronous playground runs,
+		// used only when this process cannot reach Docker itself.
+		deps.Caller = broker
 		log.Println("Connected to the submission queue")
 	}
 

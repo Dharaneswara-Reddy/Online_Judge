@@ -1,56 +1,46 @@
 package controllers
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/toji339/online-judge/internal/judge"
+	"github.com/toji339/online-judge/internal/playground"
+	"github.com/toji339/online-judge/internal/queue"
 )
 
-// JudgeController handles code execution requests.
+// JudgeController handles playground code execution requests.
+//
+// It does not own a sandbox. Where the code actually runs is the
+// runner's business: in development that is this process, and in
+// production it is a judge worker reached over the broker, because the
+// API container is deliberately given no access to the Docker daemon.
 type JudgeController struct {
-	judgeEngine *judge.Judge
-	sandbox     judge.Sandbox
+	runner playground.Runner
 }
 
-// NewJudgeController creates a controller instance given a Sandbox implementation.
-func NewJudgeController(sandbox judge.Sandbox) *JudgeController {
-	return &JudgeController{
-		judgeEngine: judge.NewJudge(sandbox),
-		sandbox:     sandbox,
-	}
+// NewJudgeController creates a controller over a playground runner.
+func NewJudgeController(runner playground.Runner) *JudgeController {
+	return &JudgeController{runner: runner}
 }
 
-// Playground execution limits. These are ceilings, not suggestions: the
-// request may ask for less, never more. Real submissions take their
-// limits from the problem definition instead and never consult these.
-const (
-	defaultTimeLimitMs   int64 = 3000
-	maxTimeLimitMs       int64 = 10000
-	defaultMemoryLimitMB int64 = 256
-	maxMemoryLimitMB     int64 = 512
-
-	// maxPlaygroundTestCases bounds how many container executions one
-	// request can trigger; each test case is a separate exec round trip.
-	maxPlaygroundTestCases = 20
-	// maxPlaygroundCodeBytes mirrors the cap the submission service
-	// applies, which this path does not go through.
-	maxPlaygroundCodeBytes = 64 * 1024
-)
-
-// clampLimit keeps a client-proposed limit inside the allowed range,
-// falling back to the default when it is absent or nonsensical.
-func clampLimit(requested, fallback, max int64) int64 {
-	if requested <= 0 {
-		return fallback
+// respondToRunFailure maps a runner failure onto an HTTP status.
+//
+// A missing worker is a 503 and says so plainly: it is a temporary
+// capacity problem the user can retry, not a bug in their code, and
+// telling them "execution engine error" would send them debugging the
+// wrong thing.
+func respondToRunFailure(c *gin.Context, err error) {
+	if errors.Is(err, queue.ErrNoWorker) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"message": "No judge worker is available right now. Please try again in a moment.",
+		})
+		return
 	}
-	if requested > max {
-		return max
-	}
-	return requested
+	c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Execution engine error"})
 }
 
 // RunCodeRequest defines the JSON payload for running user code.
@@ -72,50 +62,38 @@ func (jc *JudgeController) RunCode(c *gin.Context) {
 		return
 	}
 
-	if len(req.Code) > maxPlaygroundCodeBytes {
+	if len(req.Code) > playground.MaxCodeBytes {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
 			"success": false,
 			"message": "Code exceeds the 64KB size limit",
 		})
 		return
 	}
-	if len(req.TestCases) > maxPlaygroundTestCases {
+	if len(req.TestCases) > playground.MaxTestCases {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"message": fmt.Sprintf("At most %d test cases may be run at once", maxPlaygroundTestCases),
+			"message": fmt.Sprintf("At most %d test cases may be run at once", playground.MaxTestCases),
 		})
 		return
 	}
 
 	testCases := req.TestCases
 	if len(testCases) == 0 {
-		testCases = []judge.TestCase{
-			{
-				Input:          req.Input,
-				ExpectedOutput: req.ExpectedOutput,
-			},
-		}
+		testCases = []judge.TestCase{{Input: req.Input, ExpectedOutput: req.ExpectedOutput}}
 	}
 
-	// The playground is the only path where a client proposes its own
-	// resource limits, so they are clamped rather than merely defaulted.
-	// An unclamped value becomes the container's cgroup ceiling, and a
-	// ceiling larger than physical memory does not bind at all — the
-	// program then allocates until the host OOM killer fires.
-	timeLimitMs := clampLimit(req.TimeLimitMs, defaultTimeLimitMs, maxTimeLimitMs)
-	memLimitMB := clampLimit(req.MemoryLimitMB, defaultMemoryLimitMB, maxMemoryLimitMB)
-
-	limits := judge.Limits{
-		TimeLimit:     time.Duration(timeLimitMs) * time.Millisecond,
-		MemoryLimitMB: memLimitMB,
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
-	defer cancel()
-
-	result, err := jc.judgeEngine.Evaluate(ctx, req.Language, req.Code, testCases, limits)
+	// Limits proposed by the client are clamped by whichever process
+	// creates the container, so nothing here has to be trusted downstream.
+	result, err := jc.runner.Run(c.Request.Context(), playground.Request{
+		Mode:          playground.ModeEvaluate,
+		Language:      req.Language,
+		Code:          req.Code,
+		TestCases:     testCases,
+		TimeLimitMs:   req.TimeLimitMs,
+		MemoryLimitMB: req.MemoryLimitMB,
+	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Execution engine error"})
+		respondToRunFailure(c, err)
 		return
 	}
 
@@ -136,7 +114,8 @@ type RunRawRequest struct {
 }
 
 // RunRaw compiles and runs code, returning raw stdout/stderr without
-// comparing against expected output. Used by the Playground page.
+// comparing against expected output. Used by the Playground page and by
+// the Run button on a problem.
 func (jc *JudgeController) RunRaw(c *gin.Context) {
 	var req RunRawRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -144,52 +123,35 @@ func (jc *JudgeController) RunRaw(c *gin.Context) {
 		return
 	}
 
-	limits := judge.Limits{
-		TimeLimit:     10 * time.Second,
-		MemoryLimitMB: 256,
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
-	defer cancel()
-
-	sub, err := jc.sandbox.NewSubmission(ctx, req.Language, req.Code, limits)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to create sandbox"})
-		return
-	}
-	defer sub.Close(ctx)
-
-	// Compile
-	compileResult, err := sub.Compile(ctx)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Compilation failed"})
-		return
-	}
-	if compileResult.ExitCode != 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"stdout":    "",
-			"stderr":    compileResult.Stderr,
-			"exitCode":  compileResult.ExitCode,
-			"timedOut":  false,
-			"oomKilled": false,
-			"runtimeMs": int64(0),
+	if len(req.Code) > playground.MaxCodeBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+			"success": false,
+			"message": "Code exceeds the 64KB size limit",
 		})
 		return
 	}
 
-	// Run
-	runResult, err := sub.Run(ctx, req.Stdin)
+	result, err := jc.runner.Run(c.Request.Context(), playground.Request{
+		Mode:     playground.ModeRaw,
+		Language: req.Language,
+		Code:     req.Code,
+		Stdin:    req.Stdin,
+		// The raw playground gets the maximum allowance; there is no
+		// problem definition here to take a limit from.
+		TimeLimitMs:   playground.MaxTimeLimitMs,
+		MemoryLimitMB: playground.DefaultMemoryLimitMB,
+	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Execution failed"})
+		respondToRunFailure(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"stdout":    runResult.Stdout,
-		"stderr":    runResult.Stderr,
-		"exitCode":  runResult.ExitCode,
-		"timedOut":  runResult.TimedOut,
-		"oomKilled": runResult.OOMKilled,
-		"runtimeMs": runResult.RuntimeMS,
+		"stdout":    result.Stdout,
+		"stderr":    result.Stderr,
+		"exitCode":  result.ExitCode,
+		"timedOut":  result.TimedOut,
+		"oomKilled": result.OOMKilled,
+		"runtimeMs": result.RuntimeMS,
 	})
 }

@@ -18,6 +18,7 @@ import (
 	discussionmongo "github.com/toji339/online-judge/internal/discussion/mongorepo"
 	"github.com/toji339/online-judge/internal/judge"
 	"github.com/toji339/online-judge/internal/middleware"
+	"github.com/toji339/online-judge/internal/playground"
 	"github.com/toji339/online-judge/internal/problem"
 	"github.com/toji339/online-judge/internal/problem/mongorepo"
 	"github.com/toji339/online-judge/internal/queue"
@@ -47,6 +48,11 @@ type Deps struct {
 	Publisher queue.Publisher
 	Bus       realtime.Bus
 	Limiter   ratelimit.Limiter
+
+	// Caller runs playground code on a judge worker. It is only needed
+	// when this process cannot reach Docker itself; with neither, the
+	// playground is disabled and everything else still works.
+	Caller queue.Caller
 }
 
 // withDefaults fills in safe no-op stand-ins so the rest of Setup never
@@ -115,20 +121,39 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 		}
 	}
 
-	// 5. Mount the judge (code execution) routes. The playground runs code
-	//    in-process, so it needs a sandbox on the API host; queued
-	//    submissions do not, since judge workers own their own sandbox.
+	// 5. Mount the judge (code execution) routes.
+	//
+	//    The playground needs a sandbox, but not necessarily one on this
+	//    host. In production the API container is given no access to the
+	//    Docker daemon on purpose — it is the only internet-facing
+	//    process, and the daemon socket is equivalent to host root — so it
+	//    delegates the run to a judge worker over the broker. When this
+	//    process *can* reach Docker (development, or a single-process
+	//    deployment) it runs the code itself and no broker is involved.
 	var sandbox judge.Sandbox
+	var runner playground.Runner
+
 	sandbox, err := judge.NewDockerSandbox()
 	if err != nil {
-		log.Printf("WARNING: Docker sandbox unavailable: %v (playground disabled)", err)
+		log.Printf("Docker sandbox unavailable in this process: %v", err)
 		sandbox = nil
 	} else {
-		judgeController := controllers.NewJudgeController(sandbox)
+		runner = playground.NewLocalRunner(sandbox)
+		log.Println("Playground: running code in-process (Docker reachable)")
+	}
+	if runner == nil && deps.Caller != nil {
+		runner = playground.NewRemoteRunner(deps.Caller)
+		log.Println("Playground: delegating runs to a judge worker over the queue")
+	}
+
+	if runner == nil {
+		log.Println("WARNING: no sandbox and no broker — playground disabled")
+	} else {
+		judgeController := controllers.NewJudgeController(runner)
 		judgeGroup := router.Group("/api/judge")
-		// Every request here creates a Docker container on this host, so
-		// it needs a throttle of its own — submissions get theirs from
-		// per-user admission control, but the playground bypasses that.
+		// Every request here starts a container somewhere, so it needs a
+		// throttle of its own — submissions get theirs from per-user
+		// admission control, but the playground bypasses that.
 		judgeGroup.Use(
 			middleware.AuthMiddleware(cfg.JWTSecret),
 			middleware.RateLimit(deps.Limiter, "judge-run", 20, time.Minute),
