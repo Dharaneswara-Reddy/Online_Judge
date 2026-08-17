@@ -26,6 +26,11 @@ const (
 	// streamDrainGrace is how long StdCopy gets to finish reading output
 	// the program already wrote, after the process itself has exited.
 	streamDrainGrace = 2 * time.Second
+
+	// daemonPingTimeout bounds the reachability check at startup. It only
+	// ever talks to a local socket, so it either answers at once or is
+	// not there at all.
+	daemonPingTimeout = 5 * time.Second
 )
 
 // DockerSandbox implements the Sandbox interface using real Docker
@@ -38,6 +43,21 @@ func NewDockerSandbox() (*DockerSandbox, error) {
 	if err != nil {
 		return nil, fmt.Errorf("docker client: %w", err)
 	}
+
+	// Prove the daemon is actually reachable before claiming a sandbox.
+	//
+	// Constructing the client contacts nothing, so a process with no
+	// access to the socket — the API container, which is denied it on
+	// purpose — looked perfectly healthy here and only failed later, when
+	// it tried to create a container. That turned a startup condition
+	// callers can handle into a 500 on every run.
+	ctx, cancel := context.WithTimeout(context.Background(), daemonPingTimeout)
+	defer cancel()
+	if _, err := cli.Ping(ctx); err != nil {
+		cli.Close()
+		return nil, fmt.Errorf("docker daemon unreachable: %w", err)
+	}
+
 	return &DockerSandbox{cli: cli}, nil
 }
 
