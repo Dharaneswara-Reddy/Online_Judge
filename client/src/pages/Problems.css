@@ -29,6 +29,40 @@
   color: var(--text-primary);
 }
 
+.problems-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.problems-search {
+  width: 220px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  font-family: var(--font-family);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--transition-fast);
+}
+
+.problems-search::placeholder {
+  color: var(--text-muted);
+}
+
+.problems-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Chrome draws its own clear button in the wrong colour for a dark UI. */
+.problems-search::-webkit-search-cancel-button {
+  filter: grayscale(1) opacity(0.5);
+  cursor: pointer;
+}
+
 .problems-filters {
   display: flex;
   gap: 6px;
@@ -168,6 +202,12 @@
   font-style: italic;
 }
 
+.problems-empty-query {
+  color: var(--text-secondary);
+  font-style: normal;
+  font-family: var(--font-mono);
+}
+
 /* -- Pagination -- */
 .problems-pagination {
   display: flex;
@@ -193,6 +233,16 @@
   .problems-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .problems-controls {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .problems-search {
+    width: 100%;
   }
 
   .th-tags,

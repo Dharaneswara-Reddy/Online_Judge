@@ -8,25 +8,47 @@ const DIFFICULTIES = ["", "easy", "medium", "hard"];
 const DIFFICULTY_LABELS = { "": "All", easy: "Easy", medium: "Medium", hard: "Hard" };
 const DIFFICULTY_CLASS = { easy: "badge-easy", medium: "badge-medium", hard: "badge-hard" };
 
+// Long enough that an ordinary typing burst produces one request, short
+// enough that the table still feels like it reacts to the keyboard.
+const SEARCH_DEBOUNCE_MS = 300;
+
 export default function Problems() {
   const [problems, setProblems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [difficulty, setDifficulty] = useState("");
   const [page, setPage] = useState(1);
+  // Two pieces of state for one box: searchInput follows the keyboard so
+  // the field stays responsive, while search is what the last pause
+  // committed and is the only one the request depends on.
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput.trim());
+      // A narrower result set rarely has the page the reader was on.
+      setPage(1);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchProblems({ difficulty: difficulty || undefined, page });
+      const res = await fetchProblems({
+        difficulty: difficulty || undefined,
+        search: search || undefined,
+        page,
+      });
       setProblems(res.data || []);
     } catch {
       setError("Failed to load problems.");
     } finally {
       setLoading(false);
     }
-  }, [difficulty, page]);
+  }, [difficulty, search, page]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -42,16 +64,26 @@ export default function Problems() {
       <main className="problems-content">
         <div className="problems-header">
           <h1 className="problems-title">Problems</h1>
-          <div className="problems-filters">
-            {DIFFICULTIES.map((d) => (
-              <button
-                key={d}
-                className={`filter-btn ${difficulty === d ? "filter-btn--active" : ""}`}
-                onClick={() => handleDifficultyChange(d)}
-              >
-                {DIFFICULTY_LABELS[d]}
-              </button>
-            ))}
+          <div className="problems-controls">
+            <input
+              type="search"
+              className="problems-search"
+              aria-label="Search problems"
+              placeholder="Search problems…"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+            />
+            <div className="problems-filters">
+              {DIFFICULTIES.map((d) => (
+                <button
+                  key={d}
+                  className={`filter-btn ${difficulty === d ? "filter-btn--active" : ""}`}
+                  onClick={() => handleDifficultyChange(d)}
+                >
+                  {DIFFICULTY_LABELS[d]}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -79,7 +111,11 @@ export default function Problems() {
                 <tbody>
                   {problems.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="problems-empty">No problems found.</td>
+                      <td colSpan={5} className="problems-empty">
+                        {search
+                          ? <>No problems match “<span className="problems-empty-query">{search}</span>”.</>
+                          : "No problems found."}
+                      </td>
                     </tr>
                   )}
                   {problems.map((p, i) => (

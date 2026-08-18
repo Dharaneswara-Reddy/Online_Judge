@@ -3,6 +3,7 @@ package problem_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/toji339/online-judge/internal/problem"
@@ -184,5 +185,193 @@ func TestService_GetBySlug_NotFound(t *testing.T) {
 	_, err := svc.GetBySlug(context.Background(), "nonexistent")
 	if !errors.Is(err, problem.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// searchCatalogue seeds a set of problems whose titles, difficulties and
+// tags deliberately overlap, so a test can tell a search hit apart from a
+// difficulty or tag hit. One title carries regex metacharacters.
+func searchCatalogue(t *testing.T) (*problem.Service, *problemtest.FakeRepository) {
+	t.Helper()
+	repo := problemtest.NewFakeRepository()
+	svc := problem.NewService(repo)
+
+	seed := []struct {
+		title      string
+		difficulty problem.Difficulty
+		tags       []string
+	}{
+		{"Two Sum", problem.DifficultyEasy, []string{"arrays", "hash-table"}},
+		{"Three Sum", problem.DifficultyMedium, []string{"arrays", "two-pointers"}},
+		{"Maximum Subarray Sum", problem.DifficultyHard, []string{"dp"}},
+		{"Valid Parentheses", problem.DifficultyEasy, []string{"stack"}},
+		{"Regex (a+b)* Matching", problem.DifficultyHard, []string{"dp"}},
+	}
+	for _, s := range seed {
+		input := validInput()
+		input.Title = s.title
+		input.Difficulty = s.difficulty
+		input.Tags = s.tags
+		if _, err := svc.Create(context.Background(), input); err != nil {
+			t.Fatalf("seed %q: %v", s.title, err)
+		}
+	}
+	return svc, repo
+}
+
+// titles collects the titles of a listing so assertions can compare sets
+// without depending on the order the repository happens to return.
+func titles(problems []problem.Problem) map[string]bool {
+	got := make(map[string]bool, len(problems))
+	for _, p := range problems {
+		got[p.Title] = true
+	}
+	return got
+}
+
+func assertTitles(t *testing.T, got []problem.Problem, want ...string) {
+	t.Helper()
+	have := titles(got)
+	if len(have) != len(want) {
+		t.Fatalf("got %d problems %v, want %d %v", len(have), have, len(want), want)
+	}
+	for _, w := range want {
+		if !have[w] {
+			t.Errorf("missing %q from results %v", w, have)
+		}
+	}
+}
+
+func TestService_List_SearchMatchesTitleCaseInsensitively(t *testing.T) {
+	svc, _ := searchCatalogue(t)
+	ctx := context.Background()
+
+	for _, query := range []string{"sum", "SUM", "SuM"} {
+		got, err := svc.List(ctx, problem.ListFilter{Search: query})
+		if err != nil {
+			t.Fatalf("list %q: %v", query, err)
+		}
+		assertTitles(t, got, "Two Sum", "Three Sum", "Maximum Subarray Sum")
+	}
+
+	got, err := svc.List(ctx, problem.ListFilter{Search: "tWo sUm"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	assertTitles(t, got, "Two Sum")
+}
+
+func TestService_List_SearchCombinesWithDifficultyAndTag(t *testing.T) {
+	svc, _ := searchCatalogue(t)
+	ctx := context.Background()
+
+	// Search AND difficulty: "Three Sum" also matches "sum" but is medium.
+	got, err := svc.List(ctx, problem.ListFilter{Search: "sum", Difficulty: "easy"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	assertTitles(t, got, "Two Sum")
+
+	// Search AND tag: "Maximum Subarray Sum" matches "sum" but is not tagged arrays.
+	got, err = svc.List(ctx, problem.ListFilter{Search: "sum", Tag: "arrays"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	assertTitles(t, got, "Two Sum", "Three Sum")
+
+	// All three together narrow to a single problem.
+	got, err = svc.List(ctx, problem.ListFilter{Search: "sum", Tag: "arrays", Difficulty: "medium"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	assertTitles(t, got, "Three Sum")
+
+	// A search that matches nothing must not resurrect the filtered-out rest.
+	got, err = svc.List(ctx, problem.ListFilter{Search: "graph", Difficulty: "easy"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	assertTitles(t, got)
+}
+
+func TestService_List_BlankSearchReturnsEverything(t *testing.T) {
+	svc, _ := searchCatalogue(t)
+	ctx := context.Background()
+
+	for _, query := range []string{"", "   ", "\t\n "} {
+		got, err := svc.List(ctx, problem.ListFilter{Search: query})
+		if err != nil {
+			t.Fatalf("list %q: %v", query, err)
+		}
+		assertTitles(t, got,
+			"Two Sum", "Three Sum", "Maximum Subarray Sum",
+			"Valid Parentheses", "Regex (a+b)* Matching")
+	}
+}
+
+func TestService_List_SearchIsTrimmed(t *testing.T) {
+	svc, _ := searchCatalogue(t)
+
+	got, err := svc.List(context.Background(), problem.ListFilter{Search: "  two sum \n"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	assertTitles(t, got, "Two Sum")
+}
+
+// Count feeds the client's page controls, so it has to normalise the search
+// exactly as List does — otherwise a padded query lists five problems while
+// claiming a total of zero.
+func TestService_Count_NormalisesSearchLikeList(t *testing.T) {
+	svc, _ := searchCatalogue(t)
+	ctx := context.Background()
+
+	total, err := svc.Count(ctx, problem.ListFilter{Search: "   "})
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if total != 5 {
+		t.Errorf("count with blank search = %d, want 5", total)
+	}
+
+	total, err = svc.Count(ctx, problem.ListFilter{Search: "  sum  "})
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if total != 3 {
+		t.Errorf("count with padded search = %d, want 3", total)
+	}
+}
+
+func TestService_List_SearchTreatsRegexMetacharactersLiterally(t *testing.T) {
+	svc, _ := searchCatalogue(t)
+	ctx := context.Background()
+
+	got, err := svc.List(ctx, problem.ListFilter{Search: "(a+b)*"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	assertTitles(t, got, "Regex (a+b)* Matching")
+
+	// ".*" matches every title when read as a pattern and no title when
+	// read as text, which is the whole point.
+	got, err = svc.List(ctx, problem.ListFilter{Search: ".*"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	assertTitles(t, got)
+}
+
+func TestService_List_SearchLengthIsBounded(t *testing.T) {
+	svc, repo := searchCatalogue(t)
+
+	long := strings.Repeat("a", 5000)
+	if _, err := svc.List(context.Background(), problem.ListFilter{Search: long}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	seen := repo.LastListFilter().Search
+	if len(seen) == 0 || len(seen) >= len(long) {
+		t.Fatalf("repository saw a search of %d chars, want it bounded below %d", len(seen), len(long))
 	}
 }

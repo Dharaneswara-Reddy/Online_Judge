@@ -17,6 +17,11 @@ type FakeRepository struct {
 	problems  []problem.Problem
 	testCases []problem.TestCase
 	nextID    int
+	// lastFilter is the filter the last List/Count call arrived with. The
+	// service normalises a filter before delegating, so recording it here
+	// is how a test asserts what the database would actually have been
+	// asked for.
+	lastFilter problem.ListFilter
 }
 
 func NewFakeRepository() *FakeRepository {
@@ -93,15 +98,24 @@ func (r *FakeRepository) filtered(filter problem.ListFilter) []problem.Problem {
 	return result
 }
 
+// LastListFilter returns the filter most recently passed to List or Count.
+func (r *FakeRepository) LastListFilter() problem.ListFilter {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastFilter
+}
+
 func (r *FakeRepository) Count(_ context.Context, filter problem.ListFilter) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.lastFilter = filter
 	return len(r.filtered(filter)), nil
 }
 
 func (r *FakeRepository) List(_ context.Context, filter problem.ListFilter) ([]problem.Problem, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.lastFilter = filter
 
 	result := r.filtered(filter)
 

@@ -109,8 +109,12 @@ func listQuery(filter problem.ListFilter) bson.M {
 		query["company_tags.company"] = filter.Company
 	}
 	if filter.Search != "" {
-		// Anchored-free, case-insensitive title match. The input is quoted
-		// so regex metacharacters in a user's search are treated literally.
+		// A substring regex rather than a $text index: the box is a
+		// search-as-you-type field, and $text only matches whole stemmed
+		// words, so "subarr" would find nothing. QuoteMeta is what makes
+		// that safe — an unescaped term is both a query injection and, for
+		// a pattern like "(a+)+$", a backtracking bomb. The service caps
+		// the term's length before it gets here.
 		query["title"] = bson.M{"$regex": regexp.QuoteMeta(filter.Search), "$options": "i"}
 	}
 	return query

@@ -113,6 +113,14 @@ func EnsureIndexes(db *mongo.Database) error {
 	// Every listing sorts by created_at descending, so each filter needs
 	// that as the trailing key — otherwise Mongo has to fetch the matches
 	// and sort them in memory, which fails outright past 32MB.
+	//
+	// Title search deliberately has no index of its own. It is an
+	// unanchored case-insensitive regex, which no b-tree index can serve,
+	// and a $text index would answer a different question (whole words
+	// only) than the one the search box asks. Searching alongside a
+	// difficulty or tag still rides the compound indexes below, with the
+	// regex applied to that far smaller candidate set; a bare search scans
+	// the problem catalogue, which is curated and small by construction.
 	problemIndexes := []mongo.IndexModel{
 		{
 			Keys:    bson.D{{Key: "slug", Value: 1}},

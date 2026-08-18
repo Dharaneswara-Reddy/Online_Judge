@@ -105,14 +105,35 @@ func clampPaging(filter ListFilter) ListFilter {
 	return filter
 }
 
+// maxSearchLength caps the search term. The term becomes a regex against
+// every title, so an unbounded string lets one request hand the database
+// arbitrarily expensive work. Titles are far shorter than this, and a
+// longer query is truncated rather than rejected: truncation only widens
+// the match set, so a paste into the box still finds something instead of
+// erroring.
+const maxSearchLength = 100
+
+// normalizeSearch trims the search term and bounds its length. It lives in
+// the service so List and Count normalise identically — if they disagreed,
+// a padded query would list every problem while reporting a total of zero.
+func normalizeSearch(filter ListFilter) ListFilter {
+	search := strings.TrimSpace(filter.Search)
+	// Count runes, not bytes, so a multi-byte term is never cut mid-character.
+	if runes := []rune(search); len(runes) > maxSearchLength {
+		search = string(runes[:maxSearchLength])
+	}
+	filter.Search = search
+	return filter
+}
+
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]Problem, error) {
-	return s.repo.List(ctx, clampPaging(filter))
+	return s.repo.List(ctx, clampPaging(normalizeSearch(filter)))
 }
 
 // Count returns the total number of problems matching the filter,
 // ignoring pagination, so clients can render page controls.
 func (s *Service) Count(ctx context.Context, filter ListFilter) (int, error) {
-	return s.repo.Count(ctx, filter)
+	return s.repo.Count(ctx, normalizeSearch(filter))
 }
 
 // SolvedCountsByDifficulty turns a set of solved problem IDs into a
