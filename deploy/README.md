@@ -66,3 +66,59 @@ itself after a reboot, once the Docker daemon starts.
 
     curl http://<PUBLIC_IP>/            # frontend
     curl http://<PUBLIC_IP>/api/problems  # API through the nginx proxy
+
+## Rolling out a new build
+
+Images are built by GitHub Actions (`.github/workflows/release.yml`) and
+published to GHCR. **Do not build on the instance.** It is a t3.micro
+with 916 MB of RAM; compiling the Go binaries and the Monaco frontend
+bundle there has twice exhausted its memory badly enough to take the
+site down, once so completely that `sshd` could no longer fork a session
+and the host had to be rebooted.
+
+A rollout is therefore a pull and a restart:
+
+```bash
+cd /opt/codearena && git pull --ff-only
+cd deploy
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d --no-build
+```
+
+`git pull` is still needed because the compose file itself lives in the
+repository; the application code arrives inside the images.
+
+To roll out one exact build rather than whatever `latest` points at, set
+the tag explicitly — this is also how to roll back:
+
+```bash
+SERVER_IMAGE=ghcr.io/dharaneswara-reddy/codearena-server:<sha> \
+  docker compose -f docker-compose.prod.yml up -d --no-build api worker
+```
+
+### Verify afterwards
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+curl -sf http://127.0.0.1/ >/dev/null            && echo "frontend ok"
+curl -sf http://127.0.0.1/api/problems >/dev/null && echo "api ok"
+```
+
+The API log should say which playground path it chose:
+
+```
+Playground: delegating runs to a judge worker over the queue
+```
+
+If it says `running code in-process` instead, the API believes it can
+reach Docker — which in this deployment means something is wrong, since
+the API container is deliberately given no daemon socket.
+
+### If the API returns 502 after a rollout
+
+Recreating the `api` container gives it a new IP. nginx resolves an
+upstream name once at startup unless the address comes from a variable,
+so an older frontend image keeps proxying to the dead address. The
+current `client/nginx.conf` resolves per request through Docker's
+embedded DNS and is not affected; an image built before that fix needs
+`docker compose -f docker-compose.prod.yml restart frontend`.

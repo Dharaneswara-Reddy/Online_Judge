@@ -1,5 +1,13 @@
 # CodeArena production stack — one EC2 host, no managed AWS services.
 #
+# Preferred rollout pulls images built by CI, because building here
+# exhausts a 916 MB host:
+#
+#   docker compose -f deploy/docker-compose.prod.yml pull
+#   docker compose -f deploy/docker-compose.prod.yml up -d --no-build
+#
+# Building on the host still works but is a fallback:
+#
 #   docker compose -f deploy/docker-compose.prod.yml up -d --build
 #
 # Secrets come from deploy/.env on the host, which is git-ignored and
@@ -11,6 +19,9 @@
 
 services:
   frontend:
+    # Built by CI and pulled from the registry. `build` stays as a
+    # fallback for a host that has to build for itself.
+    image: ${CLIENT_IMAGE:-ghcr.io/dharaneswara-reddy/codearena-client:latest}
     build:
       context: ../client
       args:
@@ -24,6 +35,7 @@ services:
       - api
 
   api:
+    image: ${SERVER_IMAGE:-ghcr.io/dharaneswara-reddy/codearena-server:latest}
     build:
       context: ../server
     restart: unless-stopped
@@ -47,6 +59,8 @@ services:
         condition: service_healthy
 
   worker:
+    # Same image as the API — one binary set, different entrypoint.
+    image: ${SERVER_IMAGE:-ghcr.io/dharaneswara-reddy/codearena-server:latest}
     build:
       context: ../server
     restart: unless-stopped

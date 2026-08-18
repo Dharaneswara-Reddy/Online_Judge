@@ -1,0 +1,77 @@
+# Builds the production images and publishes them to GHCR.
+#
+# This exists because building on the production host does not work. The
+# instance is a t3.micro with 916 MB of RAM, and compiling the Go
+# binaries and the Monaco-heavy frontend bundle there exhausted its
+# memory badly enough to take the site down. A hosted runner has an order
+# of magnitude more memory, so the host only ever has to pull a finished
+# image and restart a container — seconds instead of twenty minutes.
+#
+# Publishing an image changes nothing on the server by itself. Rolling it
+# out is a separate, deliberate step: see deploy/README.md.
+name: Release images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: Build and push
+    runs-on: ubuntu-latest
+
+    # GHCR is used rather than ECR so no new AWS infrastructure and no
+    # long-lived AWS credential is involved; the token below is issued
+    # for this run only.
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: server
+            context: server
+          - name: client
+            context: client
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Repository owners can contain capitals; image references cannot.
+      - name: Normalise image name
+        id: image
+        run: echo "ref=${REGISTRY}/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/codearena-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          # Tagged with the commit SHA as well as latest, so a rollout can
+          # name an exact build and a rollback has something to go back to.
+          tags: |
+            ${{ steps.image.outputs.ref }}:latest
+            ${{ steps.image.outputs.ref }}:${{ github.sha }}
+          build-args: |
+            VITE_API_URL=/api
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
