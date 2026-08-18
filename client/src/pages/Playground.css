@@ -1,4 +1,9 @@
-.playground-page { min-height: 100vh; background: var(--bg-primary); padding: 24px; display: flex; justify-content: center; }
+/* The nav bar and the workspace split the viewport between them: the
+   shell owns the full height and the page takes whatever the bar leaves.
+   Sizing the page at 100vh instead would push the editor down by the
+   height of the bar and put the whole workspace behind a scrollbar. */
+.playground-shell { min-height: 100vh; display: flex; flex-direction: column; }
+.playground-page { flex: 1; background: var(--bg-primary); padding: 24px; display: flex; justify-content: center; }
 .playground-frame { width: 100%; max-width: 1400px; border: 1px solid rgba(255,255,255,0.08); border-radius: var(--radius-lg); overflow: hidden; background: var(--bg-panel); display: flex; flex-direction: column; }
 .playground-body { display: flex; min-height: 640px; }
 .playground-editor-col { flex: 1 1 62%; display: flex; flex-direction: column; border-right: 1px solid rgba(255,255,255,0.08); }

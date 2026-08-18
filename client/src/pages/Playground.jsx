@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState, useCallback } from "react";
+import NavBar from "../components/layout/NavBar";
 import TerminalChrome from "../components/ui/TerminalChrome";
 import LanguageSelector from "../components/editor/LanguageSelector";
 import ExecutionPanel from "../components/editor/ExecutionPanel";
@@ -41,28 +42,31 @@ export default function Playground() {
   };
 
   return (
-    <div className="playground-page">
-      <div className="playground-frame">
-        <TerminalChrome path={`~/playground/run.${LANGUAGE_META[language].ext}`} />
-        <div className="playground-body">
-          <div className="playground-editor-col">
-            <div className="playground-toolbar">
-              <LanguageSelector value={language} onChange={setLanguage} disabled={isRunning} />
-              <button className="run-btn" onClick={handleRun} disabled={isRunning}>
-                {isRunning ? "Running\u2026" : "\u25B6 Run"}
-              </button>
+    <div className="playground-shell">
+      <NavBar />
+      <div className="playground-page">
+        <div className="playground-frame">
+          <TerminalChrome path={`~/playground/run.${LANGUAGE_META[language].ext}`} />
+          <div className="playground-body">
+            <div className="playground-editor-col">
+              <div className="playground-toolbar">
+                <LanguageSelector value={language} onChange={setLanguage} disabled={isRunning} />
+                <button className="run-btn" onClick={handleRun} disabled={isRunning}>
+                  {isRunning ? "Running\u2026" : "\u25B6 Run"}
+                </button>
+              </div>
+              <Suspense fallback={<EditorFallback />}><CodeEditor language={language} value={code} onChange={handleCodeChange} /></Suspense>
             </div>
-            <Suspense fallback={<EditorFallback />}><CodeEditor language={language} value={code} onChange={handleCodeChange} /></Suspense>
-          </div>
-          <div className="playground-panel-col">
-            <ExecutionPanel
-              stdin={stdin}
-              onStdinChange={setStdin}
-              isRunning={isRunning}
-              result={runError ? { stdout: "", stderr: runError, exitCode: 1 } : result}
-              activeTab={activeTab}
-              onTabChange={setActiveTab}
-            />
+            <div className="playground-panel-col">
+              <ExecutionPanel
+                stdin={stdin}
+                onStdinChange={setStdin}
+                isRunning={isRunning}
+                result={runError ? { stdout: "", stderr: runError, exitCode: 1 } : result}
+                activeTab={activeTab}
+                onTabChange={setActiveTab}
+              />
+            </div>
           </div>
         </div>
       </div>
