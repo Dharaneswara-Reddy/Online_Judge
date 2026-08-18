@@ -87,9 +87,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 22, not 20. jsdom pulls in an undici that calls
+      # webidl.util.markAsUncloneable, which does not exist on Node 20, so
+      # the whole vitest run dies before a single test executes. 22 also
+      # matches the version used for local development.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: client/package-lock.json
 
