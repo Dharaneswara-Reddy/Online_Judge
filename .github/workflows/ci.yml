@@ -19,6 +19,18 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege, stated rather than inherited. With no permissions block
+# a workflow gets the repository's default token scope, which is a setting
+# in the GitHub UI: it reads `read` today, but nothing in the repository
+# records that, and flipping it back to "read and write" would silently
+# hand every job here — including ones running code from a fork's pull
+# request — a token that can push commits, move tags and write packages.
+# Declaring it here means that setting can no longer change what CI can
+# do. release.yml already does the same. Any job needing more asks for it
+# at the job level, where the extra scope is visible next to the reason.
+permissions:
+  contents: read
+
 # A newer push makes an in-flight run redundant.
 concurrency:
   group: ci-${{ github.ref }}
