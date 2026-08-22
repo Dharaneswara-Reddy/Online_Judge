@@ -65,8 +65,13 @@ const (
 // It blames the judge, because the judge is what failed.
 const StaleReason = "The judge did not finish this submission — it was reclaimed automatically. Please submit again."
 
-// truncateCompileError bounds stored compiler output, cutting on a rune
-// boundary so the stored string is never invalid UTF-8.
+// truncateCompileError bounds stored compiler output.
+//
+// It keeps the head rather than the tail: compilers report the first
+// error first, and what follows is usually that same error echoing
+// through the rest of the file. The cut lands on a rune boundary, since
+// compiler output routinely quotes the user's source and the stored
+// string has to stay valid UTF-8.
 func truncateCompileError(s string) string {
 	if len(s) <= MaxCompileErrorBytes {
 		return s

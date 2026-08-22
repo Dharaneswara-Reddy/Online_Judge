@@ -15,6 +15,75 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+// Driver limits for a single small instance.
+//
+// The driver's defaults assume a large fleet talking to a large cluster:
+// 100 connections per host (200 across a two-host Atlas replica set), a
+// 30 second server-selection timeout, and no default operation timeout
+// at all. Every one of those is the wrong end of the trade-off here.
+const (
+	// maxPoolSize caps connections per server. The API runs on two vCPUs
+	// inside a small memory limit, and each pooled connection costs a
+	// socket plus the driver's per-connection read/write buffers — a few
+	// hundred idle connections are a real slice of the process's heap for
+	// work the CPU could never do in parallel anyway. Twenty leaves ample
+	// headroom over the handful of concurrent database operations a
+	// two-vCPU box can actually make progress on, while still absorbing a
+	// burst of requests that are all waiting on Mongo at once.
+	maxPoolSize uint64 = 20
+
+	// minPoolSize keeps a couple of connections warm so the first request
+	// after an idle period does not pay a TCP and TLS handshake to Atlas.
+	minPoolSize uint64 = 2
+
+	// maxConnIdleTime returns memory and sockets to the OS after a burst
+	// instead of holding the high-water mark until the process restarts.
+	maxConnIdleTime = 60 * time.Second
+
+	// serverSelectionTimeout is how long an operation waits for a usable
+	// server before failing. The 30 second default means an unreachable
+	// Atlas turns every in-flight request into a 30 second hang, which
+	// exhausts the HTTP server long before anyone sees an error. Five
+	// seconds still rides out a normal replica-set election (typically
+	// well under two seconds) while failing fast on a real outage.
+	serverSelectionTimeout = 5 * time.Second
+
+	// connectTimeout bounds one TCP + TLS handshake to Atlas.
+	connectTimeout = 5 * time.Second
+
+	// operationTimeout is the client-level deadline applied to any
+	// operation whose context carries none of its own — which is every
+	// query made from an HTTP handler, since Gin's request context has no
+	// deadline. Without it a stalled operation blocks a goroutine (and
+	// its pooled connection) indefinitely. Callers that legitimately need
+	// longer, such as the index builds below, set their own deadline: the
+	// driver only applies this timeout when the context has none.
+	operationTimeout = 10 * time.Second
+)
+
+// clientOptions builds the driver options used for every connection.
+//
+// The limits are applied after ApplyURI so they win over anything in the
+// connection string: they are a safety envelope for this deployment, not
+// a default to be talked out of by a copy-pasted Atlas URI.
+func clientOptions(uri string) *options.ClientOptions {
+	return options.Client().
+		ApplyURI(uri).
+		// ObjectIDAsHexString lets documents whose _id is an ObjectID
+		// decode into a plain Go string field. Domain types such as
+		// problem.Problem and submission.Submission model their ID as a
+		// string so the domain packages stay free of driver types;
+		// without this option every read of those collections fails to
+		// decode.
+		SetBSONOptions(&options.BSONOptions{ObjectIDAsHexString: true}).
+		SetMaxPoolSize(maxPoolSize).
+		SetMinPoolSize(minPoolSize).
+		SetMaxConnIdleTime(maxConnIdleTime).
+		SetServerSelectionTimeout(serverSelectionTimeout).
+		SetConnectTimeout(connectTimeout).
+		SetTimeout(operationTimeout)
+}
+
 // Connect establishes a connection to MongoDB Atlas using
 // the provided URI. It pings the server to verify the
 // connection is alive before returning the client.
@@ -22,22 +91,15 @@ func Connect(uri string) (*mongo.Client, error) {
 	// Steps to follow while connecting to MongoDB
 	// =============================================
 
-	// 1. Create a context with a 10-second timeout for the connection attempt
+	// 1. Create a context with a 10-second timeout for the connection
+	//    attempt. Server selection gives up sooner than this in practice,
+	//    so an unreachable database is reported in about five seconds.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 2. Connect to MongoDB using the provided URI.
-	//
-	//    ObjectIDAsHexString lets documents whose _id is an ObjectID
-	//    decode into a plain Go string field. Domain types such as
-	//    problem.Problem and submission.Submission model their ID as a
-	//    string so the domain packages stay free of driver types; without
-	//    this option every read of those collections fails to decode.
-	clientOpts := options.Client().
-		ApplyURI(uri).
-		SetBSONOptions(&options.BSONOptions{ObjectIDAsHexString: true})
-
-	client, err := mongo.Connect(clientOpts)
+	// 2. Connect to MongoDB using the provided URI and the bounded
+	//    resource limits above.
+	client, err := mongo.Connect(clientOptions(uri))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
@@ -66,13 +128,45 @@ func Disconnect(client *mongo.Client) {
 	}
 }
 
-// EnsureIndexes creates the required unique indexes on the
-// users collection. These indexes enforce that no two users
-// can share the same username or email address.
+// ensure creates each index, logging and carrying on past a failure.
 //
-// Indexes are created idempotently — calling this function
-// multiple times is safe. If the indexes already exist,
-// MongoDB simply returns them without error.
+// One index at a time rather than one CreateMany per collection: a batch
+// is refused as a whole, so a single index that cannot be built — the
+// partial unique one below is the realistic case, on a database that
+// already holds duplicate in-flight submissions — would silently cost
+// its neighbours as well.
+//
+// A failure here is loud but never fatal. A missing index degrades a
+// guarantee (a constraint stops being enforced, a query gets slower);
+// refusing to start degrades everything, and on a restored backup or a
+// database left dirty by a crashed run it would be an unbootable
+// service that no amount of restarting fixes.
+func ensure(ctx context.Context, coll *mongo.Collection, models []mongo.IndexModel) {
+	created := 0
+	for _, model := range models {
+		if _, err := coll.Indexes().CreateOne(ctx, model); err != nil {
+			log.Printf("ERROR: could not build index %v on %q: %v — "+
+				"the service is starting without it and the guarantee it enforces is degraded",
+				model.Keys, coll.Name(), err)
+			continue
+		}
+		created++
+	}
+	log.Printf("%s: %d of %d indexes ensured", coll.Name(), created, len(models))
+}
+
+// EnsureIndexes creates every index the application relies on, across
+// all collections — uniqueness constraints, the compound indexes the
+// listing queries sort on, and the partial unique index that enforces
+// submission admission control.
+//
+// Indexes are created idempotently — calling this function multiple
+// times is safe. If the indexes already exist, MongoDB simply returns
+// them without error.
+//
+// It does not return an error when an index cannot be built; see ensure
+// for why. The error result is retained for a condition that genuinely
+// should stop startup, should one ever arise.
 func EnsureIndexes(db *mongo.Database) error {
 	// Steps to follow while creating indexes
 	// ========================================
@@ -94,19 +188,15 @@ func EnsureIndexes(db *mongo.Database) error {
 		},
 	}
 
-	// 3. Create the indexes on the collection
-	// Index builds on a collection with millions of documents take
-	// far longer than a request would; a short budget here means the
-	// API refuses to start rather than waiting.
+	// 3. Create the indexes on the collection.
+	// One budget covers every build below. Index builds on a collection
+	// with millions of documents take far longer than a request would,
+	// so this is generous; when it runs out the remaining builds are
+	// logged as failures and startup continues without them.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	_, err := collection.Indexes().CreateMany(ctx, indexes)
-	if err != nil {
-		return fmt.Errorf("failed to create indexes: %w", err)
-	}
-
-	log.Println("User indexes created successfully")
+	ensure(ctx, collection, indexes)
 
 	// --- Problem collection indexes ---
 	problemsColl := db.Collection("problems")
@@ -139,11 +229,7 @@ func EnsureIndexes(db *mongo.Database) error {
 			Keys: bson.D{{Key: "company_tags.company", Value: 1}, {Key: "created_at", Value: -1}},
 		},
 	}
-	_, err = problemsColl.Indexes().CreateMany(ctx, problemIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create problem indexes: %w", err)
-	}
-	log.Println("Problem indexes created successfully")
+	ensure(ctx, problemsColl, problemIndexes)
 
 	// --- Test case collection indexes ---
 	testCasesColl := db.Collection("test_cases")
@@ -155,11 +241,7 @@ func EnsureIndexes(db *mongo.Database) error {
 			},
 		},
 	}
-	_, err = testCasesColl.Indexes().CreateMany(ctx, testCaseIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create test case indexes: %w", err)
-	}
-	log.Println("Test case indexes created successfully")
+	ensure(ctx, testCasesColl, testCaseIndexes)
 
 	// --- Submission collection indexes ---
 	// The compound user/time index backs the submission history page,
@@ -190,6 +272,13 @@ func EnsureIndexes(db *mongo.Database) error {
 		{
 			Keys: bson.D{{Key: "status", Value: 1}},
 		},
+		// Backs the stale-submission sweep, which asks for non-terminal
+		// rows older than a cutoff. Both the equality and the range are
+		// in the key, so the sweep touches only the handful of documents
+		// it is about to reclaim rather than every submission ever made.
+		{
+			Keys: bson.D{{Key: "status", Value: 1}, {Key: "submitted_at", Value: 1}},
+		},
 		// Covers both the profile's solved-problem set and its accepted
 		// count without touching a document.
 		{
@@ -215,11 +304,7 @@ func EnsureIndexes(db *mongo.Database) error {
 				}),
 		},
 	}
-	_, err = submissionsColl.Indexes().CreateMany(ctx, submissionIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create submission indexes: %w", err)
-	}
-	log.Println("Submission indexes created successfully")
+	ensure(ctx, submissionsColl, submissionIndexes)
 
 	// --- War room collection indexes ---
 	// The room code is the shareable join key, so it must be unique.
@@ -243,11 +328,7 @@ func EnsureIndexes(db *mongo.Database) error {
 			Keys: bson.D{{Key: "status", Value: 1}, {Key: "started_at", Value: 1}},
 		},
 	}
-	_, err = warRoomsColl.Indexes().CreateMany(ctx, warRoomIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create war room indexes: %w", err)
-	}
-	log.Println("War room indexes created successfully")
+	ensure(ctx, warRoomsColl, warRoomIndexes)
 
 	// --- Discussion collection indexes ---
 	discussionsColl := db.Collection("discussions")
@@ -273,11 +354,7 @@ func EnsureIndexes(db *mongo.Database) error {
 			},
 		},
 	}
-	_, err = discussionsColl.Indexes().CreateMany(ctx, discussionIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create discussion indexes: %w", err)
-	}
-	log.Println("Discussion indexes created successfully")
+	ensure(ctx, discussionsColl, discussionIndexes)
 
 	// --- Company tag collection indexes ---
 	// The unique compound index is the constraint that stops one user
@@ -296,11 +373,7 @@ func EnsureIndexes(db *mongo.Database) error {
 			Keys: bson.D{{Key: "company", Value: 1}},
 		},
 	}
-	_, err = companyTagsColl.Indexes().CreateMany(ctx, companyTagIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create company tag indexes: %w", err)
-	}
-	log.Println("Company tag indexes created successfully")
+	ensure(ctx, companyTagsColl, companyTagIndexes)
 
 	return nil
 }

@@ -27,14 +27,20 @@ const (
 	// StatusOutputLimitExceeded means the program printed more than the
 	// judge will buffer, so its output could not be compared.
 	StatusOutputLimitExceeded Status = "output_limit_exceeded"
-	// StatusJudgeError means the judge itself failed — the sandbox was
-	// unreachable, the worker died mid-run, the verdict could not be
-	// stored. It is deliberately not a runtime_error: nothing about the
-	// user's program is known to be wrong, and telling them otherwise
-	// sends them debugging code that may well be correct.
+	// StatusJudgeError means the judge itself failed — the Docker daemon
+	// was unreachable, the sandbox image was missing, the worker died
+	// mid-run — so the submission never got a fair verdict. It says
+	// nothing about the code, which is the whole point: recording
+	// infrastructure failures as StatusRuntimeError told the user their
+	// correct solution crashed on test case 0.
 	//
-	// The value matches the "error" status the client already renders as
-	// "Could Not Judge", so no new vocabulary reaches the UI.
+	// It is terminal. The partial unique index behind admission control
+	// covers only pending and running, so a terminal status is what
+	// releases the user's single in-flight slot; a non-terminal "failed"
+	// state would lock them out until someone edited the database.
+	//
+	// The client already speaks this vocabulary: ProblemDetail renders a
+	// status of "error" as "Could Not Judge".
 	StatusJudgeError Status = "error"
 )
 

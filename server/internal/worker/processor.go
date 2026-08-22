@@ -70,11 +70,14 @@ func (p *Processor) Process(ctx context.Context, job queue.Job) error {
 	// 1. Load the stored submission — it, not the message, holds the code
 	sub, err := p.submissions.GetByID(ctx, job.SubmissionID)
 	if err != nil {
-		// A submission that does not exist can never be judged, so the
-		// message is dropped rather than retried. Any other failure is
-		// reported: the consumer redelivers it once, and if that fails too
-		// the record is left pending for the reaper, which is what stops a
-		// read failure holding the user's admission slot forever.
+		// Nothing has been written to the record at this point, so a
+		// failure here must not cost the message. A submission that does
+		// not exist never can be judged, so that one is dropped; anything
+		// else — an unreachable database, a timeout — is handed back by
+		// decideAck for exactly one more attempt, and if that fails too
+		// the row is left for the reaper. Dropping it outright would
+		// strand the row non-terminal and hold the user's only
+		// admission-control slot with it forever.
 		if errors.Is(err, submission.ErrNotFound) {
 			log.Printf("worker: discarding job for unknown submission %s", job.SubmissionID)
 			return nil

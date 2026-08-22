@@ -211,6 +211,34 @@ func (c *Client) respondOnce(ctx context.Context, conn *amqp.Connection, concurr
 	}
 }
 
+// maxHandlerRuntime is the ceiling on one synchronous handler
+// invocation.
+//
+// Without it the handler ran on the responder's root context, which
+// lives as long as the worker process: one request could hold a
+// concurrency slot — and the CPU behind it — indefinitely, which on a
+// two-vCPU host is most of the machine. Every caller of this queue is a
+// browser waiting on a spinner (the API gives up after 45 seconds), so
+// anything past that is compute spent on an answer nobody reads.
+const maxHandlerRuntime = 45 * time.Second
+
+// handlerBudget decides how long one invocation may run.
+//
+// The publisher stamps the message's expiry from its own deadline, which
+// is useful information: a caller that will stop waiting in five seconds
+// should not cost fifty seconds of CPU. It is also untrusted, so it can
+// only shorten the budget — never extend it, and never zero it.
+func handlerBudget(expiration string) time.Duration {
+	ms, err := strconv.ParseInt(expiration, 10, 64)
+	if err != nil || ms <= 0 {
+		return maxHandlerRuntime
+	}
+	if d := time.Duration(ms) * time.Millisecond; d < maxHandlerRuntime {
+		return d
+	}
+	return maxHandlerRuntime
+}
+
 // answer runs one handler and publishes its result back to the caller.
 //
 // The delivery is always acknowledged, even when the handler fails. A
@@ -224,7 +252,13 @@ func (c *Client) answer(ctx context.Context, ch *amqp.Channel, d amqp.Delivery, 
 		}
 	}()
 
-	body, err := handler(ctx, d.Body)
+	// The handler gets a bounded context, not the responder's root one.
+	// It still cancels with the root context on shutdown, so a drain is
+	// unaffected.
+	handlerCtx, cancelHandler := context.WithTimeout(ctx, handlerBudget(d.Expiration))
+	defer cancelHandler()
+
+	body, err := handler(handlerCtx, d.Body)
 
 	reply := amqp.Publishing{
 		ContentType:   "application/json",

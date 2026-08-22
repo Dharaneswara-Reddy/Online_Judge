@@ -48,6 +48,17 @@ func main() {
 	defer database.Disconnect(client)
 	db := client.Database(cfg.DBName)
 
+	// Ensure the indexes here too, not only in the API. A worker-only
+	// environment — a judge box brought up before any API instance, or an
+	// API whose own index build failed and carried on — would otherwise
+	// run with no partial unique index on submissions, which is what
+	// enforces admission control. The build is idempotent and returns
+	// immediately when the indexes already exist, and a failure is logged
+	// rather than fatal for the same reason it is in the API.
+	if err := database.EnsureIndexes(db); err != nil {
+		log.Printf("WARNING: could not ensure database indexes: %v", err)
+	}
+
 	// 2. Create the broker client. It connects in the background and
 	//    recovers on its own, so a broker that is down at startup — or
 	//    that restarts later — is something to wait through rather than
@@ -133,6 +144,18 @@ func main() {
 		if err := broker.Respond(ctx, cfg.WorkerCount, playground.Handler(playground.NewLocalRunner(sandbox))); err != nil && ctx.Err() == nil {
 			log.Printf("rabbitmq: playground responder gave up: %v", err)
 		}
+	}()
+
+	// Reclaim submissions the pipeline never finished. A worker killed
+	// between accepting a job and writing a status leaves the row
+	// non-terminal, and the partial unique index behind admission control
+	// then bars that user from submitting anything at all until someone
+	// edits the database. The sweep is a conditional write, so running it
+	// in every worker process at once is safe.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		worker.NewReaper(submissionSvc, worker.DefaultSweepInterval).Run(ctx)
 	}()
 
 	log.Printf("Judge worker started: prefetch %d per lane, at most %d judge container(s) on this host at once",
