@@ -180,4 +180,111 @@ func TestIncrementSummary_KeepsCompaniesApart(t *testing.T) {
 	}
 }
 
-var _ = companytag.ErrAlreadyTagged
+// TestRemove_UndoesAReport covers the compensating half of the
+// two-collection write: after it, the unique index no longer blocks the
+// user's retry.
+func TestRemove_UndoesAReport(t *testing.T) {
+	db := testDB(t)
+	repo := mongorepo.New(db)
+	problemID := insertProblem(t, db, []any{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	tag := &companytag.Tag{
+		ProblemID: problemID, UserID: "u1", Company: "Google", CreatedAt: time.Now().UTC(),
+	}
+	if err := repo.Add(ctx, tag); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	t.Cleanup(func() {
+		clean, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = db.Collection("problem_company_tags").DeleteMany(clean, bson.M{"problem_id": problemID})
+	})
+
+	if err := repo.Remove(ctx, tag.ID); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	// The same user can now report the same company again, which is the
+	// whole point of undoing it.
+	retry := &companytag.Tag{
+		ProblemID: problemID, UserID: "u1", Company: "Google", CreatedAt: time.Now().UTC(),
+	}
+	if err := repo.Add(ctx, retry); err != nil {
+		t.Errorf("retry after remove: %v", err)
+	}
+}
+
+// TestRecountSummary_RepairsDrift is the reconciliation path: the
+// reports are the authority, so a summary that drifted — because a
+// request died between the two writes — is put back from them.
+func TestRecountSummary_RepairsDrift(t *testing.T) {
+	db := testDB(t)
+	repo := mongorepo.New(db)
+	problemID := insertProblem(t, db, []any{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	t.Cleanup(func() {
+		clean, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = db.Collection("problem_company_tags").DeleteMany(clean, bson.M{"problem_id": problemID})
+	})
+
+	// Three reports stored, but no summary entry at all — the state a
+	// crash between the two writes leaves behind.
+	for _, user := range []string{"u1", "u2", "u3"} {
+		tag := &companytag.Tag{
+			ProblemID: problemID, UserID: user, Company: "Google", CreatedAt: time.Now().UTC(),
+		}
+		if err := repo.Add(ctx, tag); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+	}
+	if got := summaryCount(t, db, problemID, "Google"); got != 0 {
+		t.Fatalf("expected the summary to start empty, got %d", got)
+	}
+
+	if err := repo.RecountSummary(ctx, problemID, "Google"); err != nil {
+		t.Fatalf("recount: %v", err)
+	}
+	if got := summaryCount(t, db, problemID, "Google"); got != 3 {
+		t.Errorf("count after repair = %d, want 3", got)
+	}
+
+	// Repeating it changes nothing: the value is derived, not applied.
+	if err := repo.RecountSummary(ctx, problemID, "Google"); err != nil {
+		t.Fatalf("recount: %v", err)
+	}
+	if got := summaryCount(t, db, problemID, "Google"); got != 3 {
+		t.Errorf("count after a second repair = %d, want 3", got)
+	}
+}
+
+// TestRecountSummary_DropsACompanyWithNoReports keeps the summary from
+// carrying a zero row for a company nobody reported.
+func TestRecountSummary_DropsACompanyWithNoReports(t *testing.T) {
+	db := testDB(t)
+	repo := mongorepo.New(db)
+	problemID := insertProblem(t, db, []any{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := repo.IncrementSummary(ctx, problemID, "Ghost"); err != nil {
+		t.Fatalf("increment: %v", err)
+	}
+	if got := summaryCount(t, db, problemID, "Ghost"); got != 1 {
+		t.Fatalf("setup: count = %d, want 1", got)
+	}
+
+	if err := repo.RecountSummary(ctx, problemID, "Ghost"); err != nil {
+		t.Fatalf("recount: %v", err)
+	}
+	if got := summaryCount(t, db, problemID, "Ghost"); got != 0 {
+		t.Errorf("count = %d, want the entry dropped", got)
+	}
+}

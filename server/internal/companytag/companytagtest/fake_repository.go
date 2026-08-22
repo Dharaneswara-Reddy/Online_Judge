@@ -22,6 +22,11 @@ type FakeRepository struct {
 	// summaries mirrors the denormalised per-problem counts:
 	// problemID -> company -> count
 	summaries map[string]map[string]int
+
+	// Failure injection. The two-collection write can only be tested for
+	// recoverability if the second write can be made to fail.
+	FailIncrementSummary error
+	FailRemove           error
 }
 
 // New creates an empty FakeRepository.
@@ -51,11 +56,74 @@ func (r *FakeRepository) IncrementSummary(_ context.Context, problemID, company 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.FailIncrementSummary != nil {
+		return r.FailIncrementSummary
+	}
 	if r.summaries[problemID] == nil {
 		r.summaries[problemID] = make(map[string]int)
 	}
 	r.summaries[problemID][company]++
 	return nil
+}
+
+// Remove deletes one report by id, the compensating half of a tag.
+func (r *FakeRepository) Remove(_ context.Context, tagID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.FailRemove != nil {
+		return r.FailRemove
+	}
+	for i, tag := range r.tags {
+		if tag.ID == tagID {
+			r.tags = append(r.tags[:i], r.tags[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
+
+// RecountSummary rebuilds one company's count from the stored reports,
+// which are the authority.
+func (r *FakeRepository) RecountSummary(_ context.Context, problemID, company string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	count := 0
+	for _, tag := range r.tags {
+		if tag.ProblemID == problemID && tag.Company == company {
+			count++
+		}
+	}
+	if r.summaries[problemID] == nil {
+		r.summaries[problemID] = make(map[string]int)
+	}
+	if count == 0 {
+		delete(r.summaries[problemID], company)
+		return nil
+	}
+	r.summaries[problemID][company] = count
+	return nil
+}
+
+// SummaryCount reports the denormalised count a test should be able to
+// trust, and SetSummaryCount forces it out of step so the repair path
+// can be exercised.
+func (r *FakeRepository) SummaryCount(problemID, company string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.summaries[problemID][company]
+}
+
+// SetSummaryCount overwrites the denormalised count, standing in for a
+// request that died between the two writes.
+func (r *FakeRepository) SetSummaryCount(problemID, company string, count int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.summaries[problemID] == nil {
+		r.summaries[problemID] = make(map[string]int)
+	}
+	r.summaries[problemID][company] = count
 }
 
 func (r *FakeRepository) ListForProblem(_ context.Context, problemID string) ([]companytag.CompanyCount, error) {

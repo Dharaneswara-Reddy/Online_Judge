@@ -44,6 +44,77 @@ func (r *MongoRepository) Add(ctx context.Context, tag *companytag.Tag) error {
 	return nil
 }
 
+// Remove deletes one report by id. It is the compensating half of the
+// two-collection write: a tag whose summary update failed is undone, so
+// the unique index does not reject the retry that would fix the count.
+func (r *MongoRepository) Remove(ctx context.Context, tagID string) error {
+	oid, err := bson.ObjectIDFromHex(tagID)
+	if err != nil {
+		return fmt.Errorf("invalid tag id: %s", tagID)
+	}
+	if _, err := r.tags.DeleteOne(ctx, bson.M{"_id": oid}); err != nil {
+		return fmt.Errorf("remove company tag: %w", err)
+	}
+	return nil
+}
+
+// RecountSummary sets a company's denormalised count to the number of
+// reports actually stored for it.
+//
+// The reports are the authority and the summary array is a cache of
+// them, so recomputing is always safe to repeat and always converges. It
+// is the repair path for a request that died between writing the report
+// and bumping the count — a state nothing could previously fix, because
+// the unique index blocked the user from tagging again.
+func (r *MongoRepository) RecountSummary(ctx context.Context, problemID, company string) error {
+	oid, err := bson.ObjectIDFromHex(problemID)
+	if err != nil {
+		return fmt.Errorf("invalid problem id: %s", problemID)
+	}
+
+	count, err := r.tags.CountDocuments(ctx, bson.M{"problem_id": problemID, "company": company})
+	if err != nil {
+		return fmt.Errorf("count company tags: %w", err)
+	}
+	if count == 0 {
+		// No reports left: drop the entry rather than storing a zero row.
+		if _, err := r.problems.UpdateOne(ctx,
+			bson.M{"_id": oid},
+			bson.M{"$pull": bson.M{"company_tags": bson.M{"company": company}}},
+		); err != nil {
+			return fmt.Errorf("remove company tag summary: %w", err)
+		}
+		return nil
+	}
+
+	result, err := r.problems.UpdateOne(ctx,
+		bson.M{"_id": oid, "company_tags.company": company},
+		bson.M{"$set": bson.M{"company_tags.$.count": count}},
+	)
+	if err != nil {
+		return fmt.Errorf("recount company tag summary: %w", err)
+	}
+	if result.MatchedCount > 0 {
+		return nil
+	}
+
+	// The entry is missing entirely — the summary write never landed.
+	// Normalise a null array first, then append the true count.
+	if _, err := r.problems.UpdateOne(ctx,
+		bson.M{"_id": oid, "company_tags": nil},
+		bson.M{"$set": bson.M{"company_tags": []any{}}},
+	); err != nil {
+		return fmt.Errorf("initialise company tag summary: %w", err)
+	}
+	if _, err := r.problems.UpdateOne(ctx,
+		bson.M{"_id": oid, "company_tags.company": bson.M{"$ne": company}},
+		bson.M{"$push": bson.M{"company_tags": bson.M{"company": company, "count": count}}},
+	); err != nil {
+		return fmt.Errorf("add company tag summary: %w", err)
+	}
+	return nil
+}
+
 // maxSummaryAttempts bounds the increment retry loop. Each attempt only
 // retries because another writer won the race to append the company, and
 // once the entry exists every later attempt takes the $inc path — so one
