@@ -79,9 +79,20 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	// 1. Create a new Gin engine with default middleware (logger, recovery)
 	router := gin.Default()
 
-	// 2. Apply global hardening before anything else runs: a body cap so
-	//    an oversized request is refused before it is buffered, and the
-	//    response headers that govern how browsers treat our output.
+	// 2. Apply global hardening before anything else runs.
+	//
+	//    First decide whose forwarding headers we believe, because
+	//    everything that reads c.ClientIP() depends on it. Gin trusts
+	//    every peer by default, which let any caller pick its own
+	//    X-Forwarded-For and therefore its own rate-limit bucket. See
+	//    middleware.ApplyTrustedProxies for the reasoning.
+	if err := middleware.ApplyTrustedProxies(router); err != nil {
+		log.Fatalf("FATAL: could not configure trusted proxies: %v", err)
+	}
+
+	//    Then a body cap so an oversized request is refused before it is
+	//    buffered, and the response headers that govern how browsers
+	//    treat our output.
 	router.Use(middleware.MaxBodySize(maxRequestBodyBytes))
 	router.Use(middleware.SecurityHeaders(cfg.SecureCookies))
 

@@ -65,9 +65,17 @@ func RateLimitByIP(limiter ratelimit.Limiter, name string, limit int, window tim
 		// Steps to follow while rate limiting by address
 		// ===============================================
 
-		// 1. Identify the caller by address. Gin resolves proxy headers
-		//    only for trusted proxies, so this cannot be spoofed by an
-		//    arbitrary client header.
+		// 1. Identify the caller by address.
+		//
+		//    c.ClientIP() is only as trustworthy as the engine's trusted
+		//    proxy list. It is safe here because ApplyTrustedProxies has
+		//    narrowed that list to the private ranges our reverse proxy
+		//    lives in, so a forwarding header is ignored unless the peer
+		//    that sent it is one of our own hops — and nginx replaces
+		//    X-Forwarded-For with the address it observed rather than
+		//    appending to whatever the client claimed. Remove either half
+		//    and this key becomes attacker-chosen, which makes the limit
+		//    below decorative.
 		key := fmt.Sprintf("%s:%s", name, c.ClientIP())
 
 		// 2. Ask the limiter whether this attempt fits in the window
