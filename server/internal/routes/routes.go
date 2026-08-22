@@ -4,6 +4,7 @@
 package routes
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -55,6 +56,21 @@ type Deps struct {
 	// when this process cannot reach Docker itself; with neither, the
 	// playground is disabled and everything else still works.
 	Caller queue.Caller
+
+	// BrokerProbe reports whether the queue is reachable, for readiness.
+	// It is separate from Publisher because readiness must never publish,
+	// and nil simply means "no queue configured".
+	BrokerProbe controllers.Pinger
+}
+
+// mongoPinger adapts a Mongo database to the health controller's Pinger.
+//
+// The ping goes to the database handle the API actually uses, so it fails
+// when the API would fail rather than testing some other connection.
+type mongoPinger struct{ db *mongo.Database }
+
+func (p mongoPinger) Ping(ctx context.Context) error {
+	return p.db.Client().Ping(ctx, nil)
 }
 
 // withDefaults fills in safe no-op stand-ins so the rest of Setup never
@@ -105,6 +121,20 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 		AllowHeaders:     []string{"Content-Type", "Authorization"},
 		AllowCredentials: true,
 	}))
+
+	// 3a. Health probes.
+	//
+	//     Registered before everything else and outside every group, so
+	//     they carry no auth, no rate limiting and no CORS-sensitive
+	//     handling. They live at the root rather than under /api because
+	//     they describe the process, not the product API — and because a
+	//     container healthcheck should not have to travel through the
+	//     application's routing conventions to ask whether the process is
+	//     up. The Docker healthcheck used to hit /api/problems, which ran
+	//     a Mongo query every few seconds forever.
+	health := controllers.NewHealthController(mongoPinger{db}, deps.BrokerProbe)
+	router.GET("/healthz", health.Live)
+	router.GET("/readyz", health.Ready)
 
 	// 3. Create shared services
 	problemSvc := problem.NewService(mongorepo.New(db))

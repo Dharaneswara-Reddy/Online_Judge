@@ -123,6 +123,9 @@ func main() {
 	// The same client also carries synchronous playground runs, used only
 	// when this process cannot reach Docker itself.
 	deps.Caller = broker
+	// Readiness asks the same client whether the broker is reachable. It
+	// probes; it never publishes.
+	deps.BrokerProbe = broker
 
 	//    Probe once in the background purely so the log says which mode the
 	//    process is in. It must not gate the publisher: gating on a startup

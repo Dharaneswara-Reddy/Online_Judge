@@ -108,14 +108,19 @@ services:
     cpus: 0.60
     stop_grace_period: 30s
     logging: *default-logging
-    # There is no dedicated health endpoint yet, so this hits the cheapest
-    # public read path. It is a real end-to-end probe — routing, handler
-    # and the Atlas connection all have to work for it to return 200 — but
-    # it is a stand-in: replace it with GET /api/healthz once that exists.
+    # Liveness, not readiness. Compose restarts an unhealthy container, and
+    # restarting the API does nothing about an unreachable Atlas — it just
+    # removes the process that could still serve cached and static routes.
+    # So this asks only whether the process is serving HTTP.
+    #
+    # It replaces a probe that hit /api/problems, which ran a Mongo query
+    # every thirty seconds forever. GET /readyz is the endpoint that does
+    # consult dependencies; it is for an operator or a future load
+    # balancer, deliberately not for the restart policy.
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/api/problems || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 40s
     depends_on:
