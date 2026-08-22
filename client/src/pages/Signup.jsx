@@ -66,8 +66,15 @@ function Signup() {
 
     if (!password) {
       newErrors.password = 'Password is required';
-    } else if (password.length < 6) {
-      newErrors.password = 'Password must be at least 6 characters';
+    } else if (password.length < 8) {
+      // Mirrors the server rule in auth_controller.go. This check is for
+      // UX only — the backend is the one that enforces it.
+      newErrors.password = 'Password must be at least 8 characters';
+    } else if (new TextEncoder().encode(password).length > 72) {
+      // bcrypt cannot hash more than 72 bytes, and bytes are not
+      // characters: accented or non-Latin text hits the ceiling well
+      // before 72 keystrokes. Saying so here beats a rejected submit.
+      newErrors.password = 'Password is too long (72 bytes maximum)';
     }
 
     return newErrors;

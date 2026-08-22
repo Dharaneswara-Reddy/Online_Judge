@@ -69,6 +69,68 @@ func (ac *AuthController) setSessionCookie(c *gin.Context, token string, maxAge 
 // It checks for the basic structure: something@something.something
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 
+// Password bounds.
+//
+// The minimum is a policy choice: six characters is inside the reach of
+// an offline dictionary attack, and eight is the floor most guidance now
+// starts from.
+//
+// The maximum is not a policy choice at all — bcrypt refuses any input
+// over 72 bytes, and the old code passed the password straight through,
+// so a long passphrase came back as a 500 with no explanation. It is a
+// byte count, not a character count: a password of accented or CJK
+// characters hits it in far fewer than 72 keystrokes.
+const (
+	minPasswordLength = 8
+	maxPasswordBytes  = 72
+)
+
+// validateRegistration checks a registration payload and returns one
+// message per problem, so the caller sees every fix at once rather than
+// discovering them one submission at a time.
+//
+// It is separate from the handler because it must run before anything
+// touches bcrypt or the database.
+func validateRegistration(input models.RegisterInput) []string {
+	var errs []string
+
+	// 1. Required fields
+	if strings.TrimSpace(input.FullName) == "" {
+		errs = append(errs, "Full name is required")
+	}
+	if strings.TrimSpace(input.Username) == "" {
+		errs = append(errs, "Username is required")
+	}
+	if strings.TrimSpace(input.Email) == "" {
+		errs = append(errs, "Email is required")
+	}
+	if strings.TrimSpace(input.Password) == "" {
+		errs = append(errs, "Password is required")
+	}
+	if len(errs) > 0 {
+		// Format checks on empty values would only add noise.
+		return errs
+	}
+
+	// 2. Format and length rules
+	if !emailRegex.MatchString(input.Email) {
+		errs = append(errs, "Email format is invalid")
+	}
+	if len(input.Username) < 3 {
+		errs = append(errs, "Username must be at least 3 characters")
+	}
+	if len(input.Password) < minPasswordLength {
+		errs = append(errs, fmt.Sprintf("Password must be at least %d characters", minPasswordLength))
+	}
+	if len(input.Password) > maxPasswordBytes {
+		errs = append(errs, fmt.Sprintf(
+			"Password must be at most %d bytes — note that accented and non-Latin characters count as more than one byte each",
+			maxPasswordBytes))
+	}
+
+	return errs
+}
+
 // Register handles new user registration.
 // It validates the request body, delegates to the model for
 // user creation, and returns the created user data.
@@ -89,47 +151,12 @@ func (ac *AuthController) Register(c *gin.Context) {
 		return
 	}
 
-	// 2. Check if we are getting all required data fields
-	//    (full_name, username, email, password)
-	var validationErrors []string
-
-	if strings.TrimSpace(input.FullName) == "" {
-		validationErrors = append(validationErrors, "Full name is required")
-	}
-	if strings.TrimSpace(input.Username) == "" {
-		validationErrors = append(validationErrors, "Username is required")
-	}
-	if strings.TrimSpace(input.Email) == "" {
-		validationErrors = append(validationErrors, "Email is required")
-	}
-	if strings.TrimSpace(input.Password) == "" {
-		validationErrors = append(validationErrors, "Password is required")
-	}
-
-	if len(validationErrors) > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Validation failed",
-			"errors":  validationErrors,
-		})
-		return
-	}
-
-	// 3. Validate the user data
-	//    - email must be a valid email format
-	//    - password must be at least 6 characters
-	//    - username must be at least 3 characters
-	if !emailRegex.MatchString(input.Email) {
-		validationErrors = append(validationErrors, "Email format is invalid")
-	}
-	if len(input.Password) < 6 {
-		validationErrors = append(validationErrors, "Password must be at least 6 characters")
-	}
-	if len(input.Username) < 3 {
-		validationErrors = append(validationErrors, "Username must be at least 3 characters")
-	}
-
-	if len(validationErrors) > 0 {
+	// 2. Check every field before touching bcrypt or the database:
+	//    required values, email format, username length, and the
+	//    password bounds. The upper bound is load-bearing — bcrypt
+	//    rejects anything over 72 bytes, and letting that reach the
+	//    hasher turned a long passphrase into a 500.
+	if validationErrors := validateRegistration(input); len(validationErrors) > 0 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Validation failed",
@@ -145,11 +172,28 @@ func (ac *AuthController) Register(c *gin.Context) {
 
 	user, err := models.CreateUser(ctx, ac.db, &input)
 	if err != nil {
-		// Check if it's a duplicate key error (username or email taken)
+		// A collision on either unique field answers identically.
+		//
+		// Naming the field would turn this endpoint into an account
+		// lookup: submit a throwaway username with a target's email and
+		// the wording tells you whether that person has an account. One
+		// message for both, and no echo of the submitted value, means a
+		// probe learns only "one of these two is taken" — which it
+		// already had to guess between.
+		//
+		// This narrows the oracle, it does not close it: registration
+		// that confirms nothing at all requires email-confirmation
+		// signup, which this product does not have yet. Until then the
+		// remaining exposure is bounded by the per-address limit on this
+		// route, which now fails closed. See the report to the owner.
+		//
+		// The wording still tells a genuine user what to do — pick
+		// different details — which is the UX this endpoint exists for.
 		if strings.Contains(err.Error(), "already exists") {
 			c.JSON(http.StatusConflict, gin.H{
 				"success": false,
-				"message": "Username or email already exists",
+				"message": "Those account details are already in use",
+				"errors":  []string{"An account already exists with that email or username. Try different details, or sign in instead."},
 			})
 			return
 		}
