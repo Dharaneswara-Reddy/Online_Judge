@@ -57,15 +57,28 @@ func (n *JudgeNotifier) SubmissionJudged(ctx context.Context, sub *submission.Su
 		return
 	}
 
-	// 2. An accepted submission claims the win. DeclareWinner is a
-	//    compare-and-set, so only the genuinely-first finisher announces
-	//    a result even if two verdicts land at the same instant.
-	judgedAt := sub.SubmittedAt
-	if sub.JudgedAt != nil {
-		judgedAt = *sub.JudgedAt
-	}
+	// 2. An accepted submission claims the win.
+	//
+	//    The race is ordered by when the entrant committed their accepted
+	//    solution, not by when the judge finished with it. Those differ by
+	//    the whole judging pipeline: queue wait, container start, and for a
+	//    compiled language the compile itself. Ordering on the verdict
+	//    timestamp meant a C++ entrant who submitted first could lose to a
+	//    Python entrant who submitted later, purely because compiling cost
+	//    a second — a platform detail the contestant does not control and
+	//    cannot see.
+	//
+	//    SubmittedAt is stamped server-side when the submission is created,
+	//    so it is as authoritative as the verdict and carries none of that
+	//    bias. Only accepted submissions reach this line, so this is "who
+	//    submitted their winning answer first" rather than "who typed
+	//    first".
+	solvedAt := sub.SubmittedAt
 
-	won, err := n.rooms.DeclareWinner(ctx, room.ID, sub.UserID, username, judgedAt)
+	//    DeclareWinner is a conditional update ordered on this timestamp,
+	//    so a verdict that arrives late still wins if the solve was
+	//    earlier, and only the genuine first finisher announces a result.
+	won, err := n.rooms.DeclareWinner(ctx, room.ID, sub.UserID, username, solvedAt)
 	if err != nil {
 		log.Printf("warroom: could not declare winner for room %s: %v", room.ID, err)
 		return

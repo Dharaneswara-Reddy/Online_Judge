@@ -45,9 +45,14 @@ type Room struct {
 	Status          Status        `bson:"status" json:"status"`
 	WinnerID        string        `bson:"winner_id,omitempty" json:"winnerId,omitempty"`
 	WinnerUsername  string        `bson:"winner_username,omitempty" json:"winnerUsername,omitempty"`
-	StartedAt       *time.Time    `bson:"started_at,omitempty" json:"startedAt,omitempty"`
-	EndedAt         *time.Time    `bson:"ended_at,omitempty" json:"endedAt,omitempty"`
-	CreatedAt       time.Time     `bson:"created_at" json:"createdAt"`
+	// WinnerSolvedAt is the server-authoritative moment the winner
+	// committed their accepted solution. It is what the win is ordered by,
+	// so a verdict that arrives late can still take the win if the entrant
+	// actually finished first.
+	WinnerSolvedAt *time.Time `bson:"winner_solved_at,omitempty" json:"-"`
+	StartedAt      *time.Time `bson:"started_at,omitempty" json:"startedAt,omitempty"`
+	EndedAt        *time.Time `bson:"ended_at,omitempty" json:"endedAt,omitempty"`
+	CreatedAt      time.Time  `bson:"created_at" json:"createdAt"`
 }
 
 // IsFull reports whether the room has reached its participant cap.

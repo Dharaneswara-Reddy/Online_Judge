@@ -119,11 +119,22 @@ func (r *MongoRepository) AddParticipant(ctx context.Context, roomID string, p w
 		fmt.Sprintf("participants.%d", room.MaxParticipants-1): bson.M{"$exists": false},
 	}
 
-	result, err := r.rooms.UpdateOne(ctx, filter, bson.M{"$push": bson.M{"participants": p}})
-	if err != nil {
-		return false, fmt.Errorf("add participant: %w", err)
-	}
-	if result.MatchedCount == 0 {
+	// FindOneAndUpdate returning the post-image, rather than an update
+	// followed by a read.
+	//
+	// becameFull used to come from a separate GetByID issued after the
+	// push. Two players taking the last seats at the same moment both read
+	// the final, full room, so both were told they had filled it and
+	// room_started was broadcast once per racing joiner. Reading the
+	// document the push itself produced makes exactly one caller observe
+	// the transition, because only one push can be the one that reaches
+	// the cap.
+	var updated warroom.Room
+	err = r.rooms.FindOneAndUpdate(ctx, filter,
+		bson.M{"$push": bson.M{"participants": p}},
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	).Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
 		// Work out which precondition failed, for a useful error message.
 		current, getErr := r.GetByID(ctx, roomID)
 		if getErr != nil {
@@ -138,9 +149,8 @@ func (r *MongoRepository) AddParticipant(ctx context.Context, roomID string, p w
 		return false, warroom.ErrRoomFull
 	}
 
-	updated, err := r.GetByID(ctx, roomID)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("add participant: %w", err)
 	}
 	return updated.IsFull(), nil
 }
@@ -171,24 +181,45 @@ func (r *MongoRepository) Start(ctx context.Context, roomID string, at time.Time
 // The "winner_id does not exist" precondition makes this a compare-and-set:
 // whichever accepted submission reaches the database first wins, and every
 // later one matches nothing and reports false.
-func (r *MongoRepository) DeclareWinner(ctx context.Context, roomID, winnerID, winnerUsername string, at time.Time) (bool, error) {
+func (r *MongoRepository) DeclareWinner(ctx context.Context, roomID, winnerID, winnerUsername string, solvedAt time.Time) (bool, error) {
 	oid, err := bson.ObjectIDFromHex(roomID)
 	if err != nil {
 		return false, warroom.ErrNotFound
 	}
 
+	// The win goes to the earliest solve, not the earliest write.
+	//
+	// This used to filter only on "no winner yet", so two verdicts landing
+	// close together raced on Mongo write scheduling — and the entrant who
+	// genuinely finished first could lose because their worker's update
+	// arrived a few milliseconds later. The timestamp was accepted as an
+	// argument and then stored as ended_at without ever being compared.
+	//
+	// Now a later write carrying an earlier solvedAt corrects a
+	// provisional winner, and a later solve can never displace an earlier
+	// one. Both cases are decided by this single conditional update, so
+	// concurrent declarations settle without a read-then-write.
+	//
+	// The status precondition is the other half. Without it a verdict
+	// arriving after ExpireStale had closed a room flipped it back to
+	// finished and gave the room a winner. Only a room that is running —
+	// or already finished, so an earlier solve can still correct it — may
+	// be won; waiting and expired rooms may not.
 	filter := bson.M{
-		"_id": oid,
+		"_id":    oid,
+		"status": bson.M{"$in": []warroom.Status{warroom.StatusInProgress, warroom.StatusFinished}},
 		"$or": []bson.M{
 			{"winner_id": bson.M{"$exists": false}},
 			{"winner_id": ""},
+			{"winner_solved_at": bson.M{"$gt": solvedAt}},
 		},
 	}
 	update := bson.M{"$set": bson.M{
-		"winner_id":       winnerID,
-		"winner_username": winnerUsername,
-		"status":          warroom.StatusFinished,
-		"ended_at":        at,
+		"winner_id":        winnerID,
+		"winner_username":  winnerUsername,
+		"winner_solved_at": solvedAt,
+		"status":           warroom.StatusFinished,
+		"ended_at":         solvedAt,
 	}}
 
 	result, err := r.rooms.UpdateOne(ctx, filter, update)
