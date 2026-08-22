@@ -9,15 +9,49 @@
 #
 # Publishing an image changes nothing on the server by itself. Rolling it
 # out is a separate, deliberate step: see deploy/README.md.
+#
+# ---------------------------------------------------------------------
+# Why workflow_run, and not a job inside ci.yml
+# ---------------------------------------------------------------------
+# This workflow used to trigger on `push: main` independently of CI, with
+# no `needs:` between them. The two raced, so a commit whose tests failed
+# still got tagged `:latest` — the exact tag deploy/README.md tells the
+# operator to pull. There are two ways to close that.
+#
+#   (a) Move the build into ci.yml as a job with `needs: [server, client]`.
+#       Simplest and least error-prone: the gate is an ordering edge that
+#       cannot be misconfigured, and `github.sha` is already the right
+#       commit. The cost is that ci.yml runs on pull requests from forks,
+#       and it would then contain a job holding `packages: write`. Job
+#       permissions and an `if:` guard do contain that, but the property
+#       ci.yml's own header claims — "needs no secrets, touches no
+#       infrastructure, safe on untrusted pull requests" — would stop
+#       being true by inspection and start depending on two guards being
+#       right.
+#
+#   (b) workflow_run, which is what this does. The publishing token stays
+#       in a workflow that untrusted code can never trigger, and
+#       workflow_dispatch keeps working as a separate trigger for a
+#       deliberate manual release. The cost is that workflow_run has real
+#       footguns, handled explicitly below: it does not check out the
+#       commit that was tested, and it fires for pull-request CI runs too.
+#
+# (b) was chosen because the security boundary is worth more than the
+# simplicity, and its footguns are fixable in one place, once.
 name: Release images
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]   # matches the `name:` in ci.yml
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: release-${{ github.ref }}
+  # Keyed on the commit being released, not the ref, so two releases of
+  # the same commit collapse but two different commits do not cancel each
+  # other mid-push and leave a half-published pair.
+  group: release-${{ github.event.workflow_run.head_sha || github.sha }}
   cancel-in-progress: false
 
 env:
@@ -27,6 +61,30 @@ jobs:
   build:
     name: Build and push
     runs-on: ubuntu-latest
+
+    # The gate. All four conditions matter:
+    #
+    #  - conclusion == 'success'      CI actually passed. workflow_run
+    #                                 fires on failure and cancellation
+    #                                 too; without this the trigger change
+    #                                 would achieve nothing.
+    #  - event == 'push'              CI also runs on pull_request, and a
+    #                                 workflow_run fires for those runs as
+    #                                 well.
+    #  - head_repository == this repo `branches: [main]` filters on the
+    #                                 head branch NAME, so a fork whose own
+    #                                 default branch is called `main` slips
+    #                                 through it. Without this line, opening
+    #                                 a pull request from such a fork would
+    #                                 build and publish the fork's code to
+    #                                 our registry.
+    #  - workflow_dispatch            manual release, where none of the
+    #                                 workflow_run fields exist at all.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
 
     # GHCR is used rather than ECR so no new AWS infrastructure and no
     # long-lived AWS credential is involved; the token below is issued
@@ -45,7 +103,19 @@ jobs:
             context: client
 
     steps:
+      # workflow_run does NOT check out the commit that was tested. Both
+      # `github.sha` and checkout's default ref point at the tip of the
+      # default branch at trigger time, which is already a different commit
+      # whenever two pushes land close together — the classic way a
+      # "gated" release publishes code that was never tested. Resolve the
+      # tested SHA once here and use it for the checkout and the tag.
+      - name: Resolve the commit CI tested
+        id: rel
+        run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.rel.outputs.sha }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -66,11 +136,13 @@ jobs:
         with:
           context: ${{ matrix.context }}
           push: true
-          # Tagged with the commit SHA as well as latest, so a rollout can
-          # name an exact build and a rollback has something to go back to.
+          # Tagged with the tested commit SHA as well as latest, so a
+          # rollout can name an exact build and a rollback has something to
+          # go back to. The SHA is the one from the gate above, not
+          # github.sha, which under workflow_run is a different commit.
           tags: |
             ${{ steps.image.outputs.ref }}:latest
-            ${{ steps.image.outputs.ref }}:${{ github.sha }}
+            ${{ steps.image.outputs.ref }}:${{ steps.rel.outputs.sha }}
           build-args: |
             VITE_API_URL=/api
           cache-from: type=gha
