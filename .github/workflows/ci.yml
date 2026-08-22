@@ -2,6 +2,15 @@
 #
 # This needs no secrets and touches no infrastructure, so it is safe to
 # run on untrusted pull requests. Deployment lives in release.yml.
+#
+# Third-party actions are pinned to full commit SHAs, with the version in
+# a trailing comment. A tag like @v4 is a mutable pointer the action's
+# owner can move at any time, so it is not a version — it is a promise.
+# release.yml in particular runs with a token that can write to GHCR, and
+# a moved tag there means arbitrary new code holding it. Nothing in this
+# repository enforces SHA pinning, so it is a convention this comment has
+# to carry. The trailing comment is what keeps them upgradable: Dependabot
+# and Renovate both read it, and so does a human.
 name: CI
 
 on:
@@ -40,9 +49,9 @@ jobs:
         working-directory: server
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
@@ -85,13 +94,13 @@ jobs:
         working-directory: client
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Node 22, not 20. jsdom pulls in an undici that calls
       # webidl.util.markAsUncloneable, which does not exist on Node 20, so
       # the whole vitest run dies before a single test executes. 22 also
       # matches the version used for local development.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
