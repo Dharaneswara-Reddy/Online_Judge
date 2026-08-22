@@ -36,17 +36,11 @@ func (s *Service) Create(ctx context.Context, input CreateProblemInput) (*Proble
 		return nil, err
 	}
 
-	// Empty slices rather than nil: a nil slice is stored as BSON null,
-	// and later array updates ($push of a company tag, for instance)
-	// fail against null.
-	tags := input.Tags
-	if tags == nil {
-		tags = []string{}
-	}
+	input = normalizeCollections(input)
 
 	p := &Problem{
 		Title: input.Title, Slug: slug, Statement: input.Statement,
-		Difficulty: input.Difficulty, Tags: tags,
+		Difficulty: input.Difficulty, Tags: input.Tags,
 		CompanyTags: []CompanyTagSummary{},
 		TimeLimitMS: input.TimeLimitMS, MemoryLimitMB: input.MemoryLimitMB,
 		StarterCode: input.StarterCode, CreatedAt: time.Now().UTC(),
@@ -152,10 +146,29 @@ func (s *Service) SolvedCountsByDifficulty(ctx context.Context, problemIDs []str
 	return counts, nil
 }
 
+// normalizeCollections replaces nil collections with empty ones.
+//
+// A nil slice or map is stored as BSON null, not as an empty array. A
+// problem whose tags are null matches no tag query, so it drops out of
+// every tag view without a trace, and $push cannot append a company tag
+// to null either. Both Create and Update go through here so the two
+// cannot disagree — Update omitting this is exactly how a saved edit
+// used to make a problem vanish from its tags.
+func normalizeCollections(input CreateProblemInput) CreateProblemInput {
+	if input.Tags == nil {
+		input.Tags = []string{}
+	}
+	if input.StarterCode == nil {
+		input.StarterCode = map[string]string{}
+	}
+	return input
+}
+
 func (s *Service) Update(ctx context.Context, id string, input CreateProblemInput) (*Problem, error) {
 	if err := validateProblemInput(input); err != nil {
 		return nil, err
 	}
+	input = normalizeCollections(input)
 	p := &Problem{
 		Title: input.Title, Statement: input.Statement, Difficulty: input.Difficulty,
 		Tags: input.Tags, TimeLimitMS: input.TimeLimitMS, MemoryLimitMB: input.MemoryLimitMB,

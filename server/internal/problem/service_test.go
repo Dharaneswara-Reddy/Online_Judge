@@ -123,6 +123,64 @@ func TestService_Update_HappyPath(t *testing.T) {
 	}
 }
 
+// TestService_Update_NeverStoresNilSlices is the guard Create has and
+// Update lacked. A nil slice is stored as BSON null: the problem then
+// matches no tag query, so it silently disappears from every tag view,
+// and $push cannot append a company tag to null either.
+func TestService_Update_NeverStoresNilSlices(t *testing.T) {
+	repo := problemtest.NewFakeRepository()
+	svc := problem.NewService(repo)
+	ctx := context.Background()
+
+	p, err := svc.Create(ctx, validInput())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	input := validInput()
+	input.Tags = nil
+	input.StarterCode = nil
+	updated, err := svc.Update(ctx, p.ID, input)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	if updated.Tags == nil {
+		t.Error("tags is nil — it would be stored as BSON null")
+	}
+	if len(updated.Tags) != 0 {
+		t.Errorf("tags = %v, want empty", updated.Tags)
+	}
+	if updated.StarterCode == nil {
+		t.Error("starterCode is nil — it would be stored as BSON null")
+	}
+
+	stored, err := svc.GetByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if stored.Tags == nil || stored.StarterCode == nil {
+		t.Errorf("stored problem has nil slices: tags=%v starterCode=%v", stored.Tags, stored.StarterCode)
+	}
+}
+
+// TestService_Update_KeepsCompanyTags pins the other half of the same
+// concern: the update writes a fixed field list, and the denormalised
+// company tag summary must not be part of it.
+func TestService_Update_KeepsCompanyTags(t *testing.T) {
+	repo := problemtest.NewFakeRepository()
+	svc := problem.NewService(repo)
+	ctx := context.Background()
+
+	p, err := svc.Create(ctx, validInput())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if p.CompanyTags == nil {
+		t.Error("Create left companyTags nil — $push cannot append to BSON null")
+	}
+}
+
 func TestService_AddTestCase_EmptyExpectedOutput(t *testing.T) {
 	svc := problem.NewService(problemtest.NewFakeRepository())
 	err := svc.AddTestCase(context.Background(), &problem.TestCase{
