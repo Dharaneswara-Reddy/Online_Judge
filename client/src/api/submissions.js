@@ -27,6 +27,11 @@ const TERMINAL_STATUSES = new Set([
   "runtime_error",
   "compile_error",
   "output_limit_exceeded",
+  // The judge itself failed, so the submission never got a verdict. It
+  // is terminal all the same: without it here, polling keeps asking
+  // about a finished submission until the window runs out and only then
+  // shows the result.
+  "error",
 ]);
 
 export function isTerminalStatus(status) {

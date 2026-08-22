@@ -24,6 +24,9 @@ const STATUS_LABELS = {
   runtime_error: "Runtime Error",
   compile_error: "Compile Error",
   output_limit_exceeded: "Output Limit Exceeded",
+  // Matches the wording ProblemDetail already uses: the judge failed,
+  // and saying so is honest where "Runtime Error" would blame the code.
+  error: "Could Not Judge",
 };
 
 const PAGE_SIZE = 10;
