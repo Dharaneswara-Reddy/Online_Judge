@@ -97,6 +97,16 @@ jobs:
       packages: write
 
     strategy:
+      # Kept false, but for a different reason than before. It used to be
+      # actively harmful: each leg pushed :latest itself, so a failed
+      # client build with a successful server build left :latest pointing
+      # at a server image with no matching frontend — a mismatched pair
+      # that the next `docker compose pull` would happily deploy. Now no
+      # leg touches :latest at all (see the promote job below), so a
+      # partial failure can only leave orphan SHA tags that nothing
+      # references. With that fixed, running every leg to completion is
+      # the better behaviour: one run tells you all three results instead
+      # of only the first to break.
       fail-fast: false
       matrix:
         include:
@@ -148,14 +158,67 @@ jobs:
         with:
           context: ${{ matrix.context }}
           push: true
-          # Tagged with the tested commit SHA as well as latest, so a
-          # rollout can name an exact build and a rollback has something to
-          # go back to. The SHA is the one from the gate above, not
-          # github.sha, which under workflow_run is a different commit.
-          tags: |
-            ${{ steps.image.outputs.ref }}:latest
-            ${{ steps.image.outputs.ref }}:${{ steps.rel.outputs.sha }}
+          # ONLY the immutable SHA tag. :latest is moved by the promote
+          # job once every image for this commit exists, so the three
+          # halves of a deployment can never be published out of step.
+          # The SHA is the one from the gate above, not github.sha, which
+          # under workflow_run is a different commit.
+          tags: ${{ steps.image.outputs.ref }}:${{ steps.rel.outputs.sha }}
           build-args: |
             VITE_API_URL=/api
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------
+  # Atomic promotion of :latest
+  # ---------------------------------------------------------------------
+  # deploy/README.md tells the operator to pull :latest, and compose
+  # defaults to it, so :latest is the pointer that decides what production
+  # runs. The three images are one deployment: the frontend bundle talks
+  # to a specific API shape, and the worker starts containers from a
+  # specific sandbox image. Publishing them independently means a failed
+  # leg can leave production one pull away from a mismatched set.
+  #
+  # `needs: build` makes this run only when all three legs succeeded, and
+  # imagetools retags manifests in the registry rather than pulling and
+  # re-pushing layers, so the three moves take seconds and land close
+  # together. GHCR has no multi-tag transaction, so this is as close to
+  # atomic as the registry allows — the remaining window is a few seconds
+  # between three retags, versus the previous failure mode of a mismatch
+  # that persists until someone notices.
+  promote:
+    name: Point :latest at this build
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Resolve the commit CI tested
+        id: rel
+        run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move :latest
+        env:
+          SHA: ${{ steps.rel.outputs.sha }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+          for image in server client sandbox; do
+            ref="${REGISTRY}/${owner}/codearena-${image}"
+            echo "::group::${ref}:latest -> ${SHA}"
+            docker buildx imagetools create --tag "${ref}:latest" "${ref}:${SHA}"
+            echo "::endgroup::"
+          done
