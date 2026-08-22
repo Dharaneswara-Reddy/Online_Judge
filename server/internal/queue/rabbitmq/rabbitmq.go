@@ -17,7 +17,10 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	neturl "net/url"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -44,6 +47,17 @@ const (
 // dialTimeout bounds a single connection attempt.
 const dialTimeout = 10 * time.Second
 
+// publishDialCooldown is how long a failed publish-side re-dial suppresses
+// the next one.
+//
+// Publishing has an HTTP request waiting on it, which makes it different
+// from the consumer's recovery loop. A lazy client that re-dialled on every
+// publish would charge each submission a full dialTimeout while the broker
+// was down, so an outage that should degrade one feature would instead tie
+// up every request handler. Failing fast for a few seconds and then trying
+// again costs one slow request per cooldown window rather than all of them.
+const publishDialCooldown = 5 * time.Second
+
 // ErrClosed is returned once the client has been shut down.
 var ErrClosed = errors.New("queue client is closed")
 
@@ -53,6 +67,15 @@ var ErrClosed = errors.New("queue client is closed")
 // connection replacement takes the connection lock.
 type Client struct {
 	url string
+
+	// dialAttempts counts connection attempts. It exists so tests can prove
+	// that concurrent publishes against a dead broker do not each open their
+	// own connection.
+	dialAttempts atomic.Int64
+
+	// nextPublishDial is the earliest time a failed publish may re-dial.
+	// Guarded by mu.
+	nextPublishDial time.Time
 
 	// namespace prefixes every queue name. Production leaves it empty and
 	// uses the real lane queues; tests set it so their traffic cannot be
@@ -160,12 +183,14 @@ func (c *Client) reconnect() error {
 		c.conn = nil
 	}
 
+	c.dialAttempts.Add(1)
 	conn, err := amqp.DialConfig(c.url, amqp.Config{
 		Dial:      amqp.DefaultDial(dialTimeout),
 		Heartbeat: 10 * time.Second,
 	})
 	if err != nil {
-		return err
+		// Report the failure without the URL, which carries credentials.
+		return fmt.Errorf("dial broker: %w", redactURLError(err, c.url))
 	}
 
 	ch, err := conn.Channel()
@@ -173,6 +198,10 @@ func (c *Client) reconnect() error {
 		_ = conn.Close()
 		return fmt.Errorf("open publish channel: %w", err)
 	}
+
+	// A live connection clears the publish-side cooldown: the next publish
+	// should go straight out rather than waiting out a stale penalty.
+	c.nextPublishDial = time.Time{}
 
 	// Declaring here means either process can start first, and a broker
 	// that lost its definitions gets them back on reconnect.
@@ -335,11 +364,79 @@ func (c *Client) Publish(ctx context.Context, lane queue.Lane, job queue.Job) er
 	}
 
 	// One retry after a re-dial covers the common case of publishing into
-	// a connection that died since the last message.
+	// a connection that died since the last message — a broker restart, or
+	// an API process that started before the broker was up.
+	//
+	// The cooldown is what stops that becoming a per-request dial while the
+	// broker is genuinely down. Concurrent publishes serialise on mu inside
+	// reconnect, and the first one to fail closes the window behind it, so
+	// fifty simultaneous submissions produce one dial rather than fifty.
+	if !c.mayDialForPublish() {
+		return fmt.Errorf("%w: broker unreachable, not retrying for %s", queue.ErrUnavailable, publishDialCooldown)
+	}
 	if rErr := c.reconnect(); rErr != nil {
+		c.suppressPublishDial()
 		return fmt.Errorf("%w: %v", queue.ErrUnavailable, rErr)
 	}
 	return publish()
+}
+
+// mayDialForPublish reports whether the publish path is allowed to open a
+// new connection yet.
+func (c *Client) mayDialForPublish() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().After(c.nextPublishDial)
+}
+
+// suppressPublishDial closes the dial window after a failed attempt.
+func (c *Client) suppressPublishDial() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nextPublishDial = time.Now().Add(publishDialCooldown)
+}
+
+// redactURLError strips the broker URL out of an error.
+//
+// amqp errors routinely embed the address they failed to reach, and that
+// address carries the broker password. Callers log these errors, so the
+// credential has to be removed before the error escapes this package.
+func redactURLError(err error, brokerURL string) error {
+	text := err.Error()
+	if brokerURL != "" {
+		text = strings.ReplaceAll(text, brokerURL, "<broker>")
+	}
+	if u, parseErr := neturl.Parse(brokerURL); parseErr == nil && u.User != nil {
+		if user := u.User.Username(); user != "" {
+			text = strings.ReplaceAll(text, user, "<user>")
+		}
+		if pass, ok := u.User.Password(); ok && pass != "" {
+			text = strings.ReplaceAll(text, pass, "<redacted>")
+		}
+		if u.Host != "" {
+			text = strings.ReplaceAll(text, u.Host, "<broker-host>")
+		}
+	}
+	return errors.New(text)
+}
+
+// DialAttempts reports how many connection attempts this client has made.
+//
+// It exists so a recovery test can assert that reconnection is bounded —
+// that a broker restart costs a handful of dials rather than a hot loop —
+// which is otherwise invisible from outside the package.
+func (c *Client) DialAttempts() int64 { return c.dialAttempts.Load() }
+
+// Ping establishes a connection if there is not one already, so a caller
+// can report whether the broker is reachable.
+//
+// It exists for startup logging and for readiness checks. Nothing in the
+// request path should call it: publishing already opens its own connection
+// on demand, and making a request wait on a separate probe first would
+// reintroduce exactly the coupling this package works to avoid.
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.ensureConnection(ctx)
+	return err
 }
 
 // Consume reads jobs from one lane and dispatches them to handler,

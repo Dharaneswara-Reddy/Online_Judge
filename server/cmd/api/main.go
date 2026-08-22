@@ -63,6 +63,10 @@ func setGinMode(appEnv, ginMode string) string {
 	return gin.Mode()
 }
 
+// brokerProbeTimeout bounds the startup log probe. It is informational
+// only — nothing waits on it — so it stays short.
+const brokerProbeTimeout = 15 * time.Second
+
 func main() {
 	// Steps to follow while starting the server
 	// ============================================
@@ -91,22 +95,48 @@ func main() {
 		log.Fatalf("FATAL: Could not create database indexes: %v", err)
 	}
 
-	// 5. Connect to the submission queue. This is optional: without a
-	//    broker the API judges submissions inline instead of refusing
-	//    them, which keeps local development working with no extra setup.
+	// 5. Attach to the submission queue.
+	//
+	//    The client is deliberately lazy. It used to be built with
+	//    rabbitmq.Connect, which dials once: if the broker was not up at
+	//    that moment the publisher stayed nil for the entire life of the
+	//    process, and no later recovery was possible. That is not a rare
+	//    corner — on an EC2 reboot both containers start together and the
+	//    broker takes about a minute to become ready, so the API would come
+	//    up healthy and 503 every submission until someone restarted it by
+	//    hand. depends_on does not help, because it orders container start,
+	//    not process readiness across a host reboot.
+	//
+	//    rabbitmq.New never dials here. The first publish opens the
+	//    connection, and Publish re-dials and retries when it finds a dead
+	//    one, so the API recovers from a broker restart on its own. A
+	//    publish-side cooldown keeps a genuinely absent broker from costing
+	//    every request a dial timeout.
+	//
+	//    The queue stays optional: when publishing fails and this process
+	//    can reach Docker, the submission is judged inline instead of being
+	//    refused, which keeps local development working with no extra setup.
 	var deps routes.Deps
-	broker, err := rabbitmq.Connect(cfg.RabbitMQURL)
-	if err != nil {
-		log.Printf("WARNING: submission queue unavailable (%v) — judging inline. "+
-			"Start it with: docker compose up -d", err)
-	} else {
-		defer broker.Close()
-		deps.Publisher = broker
-		// The same connection also carries synchronous playground runs,
-		// used only when this process cannot reach Docker itself.
-		deps.Caller = broker
+	broker := rabbitmq.New(cfg.RabbitMQURL)
+	defer broker.Close()
+	deps.Publisher = broker
+	// The same client also carries synchronous playground runs, used only
+	// when this process cannot reach Docker itself.
+	deps.Caller = broker
+
+	//    Probe once in the background purely so the log says which mode the
+	//    process is in. It must not gate the publisher: gating on a startup
+	//    probe is the bug described above.
+	go func() {
+		probeCtx, cancel := context.WithTimeout(context.Background(), brokerProbeTimeout)
+		defer cancel()
+		if err := broker.Ping(probeCtx); err != nil {
+			log.Printf("WARNING: submission queue not reachable at startup — the API will "+
+				"keep trying, and judges inline meanwhile if Docker is available (%v)", err)
+			return
+		}
 		log.Println("Connected to the submission queue")
-	}
+	}()
 
 	// 6. Connect to Redis. Also optional: without it, War Room events only
 	//    reach clients attached to this instance and rate limits are not

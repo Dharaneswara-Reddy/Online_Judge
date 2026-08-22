@@ -495,3 +495,84 @@ func TestRecovery_ShutdownWaitsForInFlightWork(t *testing.T) {
 
 	assert.True(t, finished.Load(), "shutdown abandoned a job that was mid-flight")
 }
+
+// TestRecovery_APIPublisherReconnectsAfterBrokerRestart is the P1-8
+// regression test, from the API's side rather than the worker's.
+//
+// The API used to build its publisher with rabbitmq.Connect, which dials
+// once. If the broker was down at that moment the publisher stayed nil for
+// the life of the process; if it died later, the dead connection was never
+// replaced. Either way the site looked healthy while every submission
+// failed, and only a manual API restart fixed it.
+//
+// The sequence below is the whole claim: publish, kill the broker, bring it
+// back, publish again on the same client, and read the message off the
+// queue to prove it really arrived.
+func TestRecovery_APIPublisherReconnectsAfterBrokerRestart(t *testing.T) {
+	requireBroker(t)
+
+	publisher := isolatedClient(t)
+	ctx := context.Background()
+
+	// 1. The API connects and publishes.
+	if err := publisher.Publish(ctx, queue.LaneStandard, queue.Job{SubmissionID: "before-restart"}); err != nil {
+		t.Fatalf("publish before restart: %v", err)
+	}
+	dialsBefore := publisher.DialAttempts()
+
+	// 2. The broker goes away and 3. comes back.
+	restartBroker(t)
+
+	// 4. The same publisher recovers — no process restart, no new client.
+	// 5. A submission after recovery succeeds.
+	//
+	// The first attempt after a restart may land in the publish-side
+	// cooldown, which is deliberate: it is what stops an outage charging
+	// every request a dial timeout. Retrying past it is what a second
+	// submission a few seconds later would do anyway.
+	var published bool
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := publisher.Publish(ctx, queue.LaneStandard, queue.Job{SubmissionID: "after-restart"}); err == nil {
+			published = true
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if !published {
+		t.Fatal("the publisher never recovered after the broker came back — " +
+			"this is the P1-8 failure: submissions 503 until the API is restarted")
+	}
+
+	// Prove the message is genuinely on the queue, not merely that Publish
+	// returned nil into a void.
+	received := make(chan string, 2)
+	consumeCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	go func() {
+		_ = publisher.Consume(consumeCtx, queue.LaneStandard, 1, func(_ context.Context, job queue.Job) error {
+			received <- job.SubmissionID
+			return nil
+		})
+	}()
+
+	seen := map[string]bool{}
+	timeout := time.After(60 * time.Second)
+	for len(seen) < 1 {
+		select {
+		case id := <-received:
+			seen[id] = true
+		case <-timeout:
+			t.Fatal("no message was delivered after recovery")
+		}
+	}
+	if !seen["after-restart"] && !seen["before-restart"] {
+		t.Fatalf("unexpected message ids: %v", seen)
+	}
+
+	// 6. Recovery must not have opened an unbounded number of connections.
+	if dials := publisher.DialAttempts() - dialsBefore; dials > 25 {
+		t.Errorf("publisher dialled %d times recovering from one restart — "+
+			"reconnection must be bounded, not a hot loop", dials)
+	}
+}
