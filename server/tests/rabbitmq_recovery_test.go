@@ -417,9 +417,19 @@ func TestRecovery_UnacknowledgedWorkIsRedelivered(t *testing.T) {
 	}
 }
 
-// TestRecovery_FailedJobsAreNotRequeuedForever guards the other side:
-// a job whose handler genuinely failed has already been recorded as
-// terminal, so redelivering it would loop forever.
+// TestRecovery_FailedJobsAreNotRequeuedForever guards the other side of
+// at-least-once: a job that always fails must not loop forever.
+//
+// The policy is retry-once, not drop-on-first-failure. A judging failure
+// used to be discarded outright, which left a submission whose record
+// could not even be read stuck pending forever; decideAck in
+// internal/queue/rabbitmq now hands a first failure back and discards it
+// on the redelivery the broker marks. So the bound is exactly two
+// attempts — one more than nothing, and finite.
+//
+// This assertion said 1 and had never run in CI to notice, which is the
+// whole reason F4 matters: it was left behind by the ack-policy change
+// and only a real broker could have caught it.
 func TestRecovery_FailedJobsAreNotRequeuedForever(t *testing.T) {
 	requireBroker(t)
 
@@ -438,8 +448,8 @@ func TestRecovery_FailedJobsAreNotRequeuedForever(t *testing.T) {
 		return fmt.Errorf("judging failed")
 	})
 
-	assert.Equal(t, int64(1), atomic.LoadInt64(&attempts),
-		"a failed job is dropped, not redelivered in a loop")
+	assert.Equal(t, int64(2), atomic.LoadInt64(&attempts),
+		"a failing job is retried exactly once and then dropped, not looped")
 }
 
 // =============================================================

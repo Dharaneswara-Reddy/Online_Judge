@@ -34,9 +34,19 @@ Create `deploy/.env` on the host — never commit it:
     RABBITMQ_PASSWORD=<password>
     WORKER_COUNT=2
 
-Build the judge sandbox image (the worker starts containers from it):
+Get the judge sandbox image (the worker starts a container from it for
+every submission). **Do not build it here** — it apt-installs a JDK and
+build-essential, which is the heaviest build in the project and exactly
+the kind of thing that has taken this instance down. Pull the published
+one and give it the local tag the worker looks for:
 
-    docker build -t codearena-sandbox:latest docker/judge-sandbox
+    docker pull ghcr.io/dharaneswara-reddy/codearena-sandbox:latest
+    docker tag  ghcr.io/dharaneswara-reddy/codearena-sandbox:latest codearena-sandbox:latest
+
+The retag is needed because the worker refers to `codearena-sandbox:latest`
+by a constant in the Go source rather than by configuration. Repeat both
+lines any time the sandbox image changes, and after anything that prunes
+images.
 
 Then bring the stack up:
 
