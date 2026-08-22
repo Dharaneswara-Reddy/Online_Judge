@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/toji339/online-judge/internal/judge"
 )
@@ -105,6 +106,41 @@ func (s *Service) MarkRunning(ctx context.Context, id string) error {
 	return s.repo.UpdateStatus(ctx, id, StatusRunning, nil)
 }
 
+// maxCompileErrorBytes caps how much compiler output is stored on a
+// submission.
+//
+// The judge buffers up to a mebibyte of it, and all of that was being
+// persisted per submission. One template-heavy C++ error reaches that
+// figure by itself, and nothing stops a user resubmitting it in a loop,
+// so the stored size of the collection was effectively user-controlled.
+// Eight kibibytes is dozens of lines of compiler output — far more than
+// anyone reads before fixing the first error, which is the one that
+// matters.
+const maxCompileErrorBytes = 8 * 1024
+
+// truncationMarker tells the user output was cut. Silently dropping the
+// tail would leave them looking for errors that are not there.
+const truncationMarker = "\n\n... compiler output truncated ...\n"
+
+// truncateCompileError caps stored compiler output, keeping the head.
+//
+// The head, not the tail: compilers report the first error first, and
+// everything after it is usually that same error echoing through the
+// rest of the file.
+func truncateCompileError(out string) string {
+	if len(out) <= maxCompileErrorBytes {
+		return out
+	}
+
+	cut := maxCompileErrorBytes
+	// Never split a multi-byte rune — the stored text has to stay valid
+	// UTF-8, since compiler output routinely quotes the user's source.
+	for cut > 0 && !utf8.RuneStart(out[cut]) {
+		cut--
+	}
+	return out[:cut] + truncationMarker
+}
+
 // MarkJudged writes the final verdict. It is called only by the judge
 // worker — the user-facing API never sets a verdict, which keeps the
 // outcome server-authoritative.
@@ -112,6 +148,9 @@ func (s *Service) MarkJudged(ctx context.Context, id string, result Result) erro
 	if !result.Status.IsTerminal() {
 		return ValidationError{Field: "status", Message: "must be a terminal verdict"}
 	}
+	// Capped here rather than in the judge so every path that records a
+	// verdict — queued worker, inline fallback — is covered by one rule.
+	result.CompileError = truncateCompileError(result.CompileError)
 	return s.repo.UpdateStatus(ctx, id, result.Status, &result)
 }
 

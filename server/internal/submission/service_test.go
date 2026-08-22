@@ -3,7 +3,9 @@ package submission_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -198,6 +200,62 @@ func TestMarkFailed_ReleasesTheAdmissionControlSlot(t *testing.T) {
 
 	assert.NoError(t, err, "the user must be able to submit again straight away")
 	assert.True(t, submission.StatusError.IsTerminal())
+}
+
+// --- Stored compile output ---
+
+// TestMarkJudged_TruncatesAHugeCompileError. The judge buffers up to a
+// mebibyte of compiler output and every byte of it was persisted, per
+// submission — a template-heavy C++ error reaches that on its own, and
+// resubmitting it is free.
+func TestMarkJudged_TruncatesAHugeCompileError(t *testing.T) {
+	svc, _ := newService()
+	ctx := context.Background()
+	sub, _ := svc.Create(ctx, validInput())
+
+	huge := "error: first real problem is right here\n" + strings.Repeat("x", 1<<20)
+	require.NoError(t, svc.MarkJudged(ctx, sub.ID, submission.Result{
+		Status: submission.StatusCompileError, FailedCase: -1, CompileError: huge,
+	}))
+
+	stored, err := svc.GetByID(ctx, sub.ID)
+	require.NoError(t, err)
+	assert.Less(t, len(stored.CompileError), len(huge)/10, "the stored output is capped")
+	assert.Contains(t, stored.CompileError, "error: first real problem is right here",
+		"the head is kept: the first error is the useful one")
+	assert.Contains(t, stored.CompileError, "truncated",
+		"the user must be told output was cut rather than silently losing it")
+}
+
+func TestMarkJudged_KeepsAnOrdinaryCompileErrorVerbatim(t *testing.T) {
+	svc, _ := newService()
+	ctx := context.Background()
+	sub, _ := svc.Create(ctx, validInput())
+
+	message := "main.cpp:3:5: error: 'x' was not declared in this scope\n"
+	require.NoError(t, svc.MarkJudged(ctx, sub.ID, submission.Result{
+		Status: submission.StatusCompileError, FailedCase: -1, CompileError: message,
+	}))
+
+	stored, _ := svc.GetByID(ctx, sub.ID)
+	assert.Equal(t, message, stored.CompileError)
+}
+
+// TestMarkJudged_TruncationKeepsValidUTF8 guards the boundary: cutting a
+// byte count out of the middle of a multi-byte rune would store mojibake.
+func TestMarkJudged_TruncationKeepsValidUTF8(t *testing.T) {
+	svc, _ := newService()
+	ctx := context.Background()
+	sub, _ := svc.Create(ctx, validInput())
+
+	require.NoError(t, svc.MarkJudged(ctx, sub.ID, submission.Result{
+		Status:       submission.StatusCompileError,
+		FailedCase:   -1,
+		CompileError: strings.Repeat("é", 1<<20),
+	}))
+
+	stored, _ := svc.GetByID(ctx, sub.ID)
+	assert.True(t, utf8.ValidString(stored.CompileError), "stored text must stay valid UTF-8")
 }
 
 func TestGetByID_UnknownReturnsNotFound(t *testing.T) {
