@@ -23,6 +23,32 @@ const (
 	pingPeriod = (pongWait * 9) / 10
 )
 
+// maxSocketMessageBytes caps a single inbound WebSocket message.
+//
+// This socket is one-way in practice: the server pushes race events and
+// the client only ever sends pong frames and the occasional small
+// control message. Without a limit gorilla/websocket buffers a frame of
+// any size — its default is 0, meaning unlimited — and the MaxBodySize
+// middleware cannot help, because the connection is hijacked at the
+// upgrade and never passes through the HTTP body path again. One
+// authenticated participant could therefore hand the API a multi-
+// gigabyte frame and take the process down for everyone.
+//
+// 4KB is far above anything a legitimate client sends and far below
+// anything that threatens the process.
+const maxSocketMessageBytes = 4 << 10
+
+// configureReadPump applies the inbound-side limits to a live socket:
+// how much a peer may send in one message, and how long it may stay
+// silent before we consider it dead.
+func configureReadPump(conn *websocket.Conn) {
+	conn.SetReadLimit(maxSocketMessageBytes)
+	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
+}
+
 // WarRoomController serves the lobby, the room lifecycle, and the live
 // WebSocket each participant holds open during a race.
 type WarRoomController struct {
@@ -193,13 +219,12 @@ func (wc *WarRoomController) Live(c *gin.Context) {
 		_ = conn.WriteJSON(realtime.Event{Type: warroom.EventParticipantJoined, RoomID: room.ID, Payload: snapshot})
 	}
 
-	// 5. Read pongs in the background purely to detect a dead peer
+	// 5. Read pongs in the background purely to detect a dead peer.
+	//    configureReadPump also caps how much a participant may send, so
+	//    a hostile client cannot make us buffer an arbitrary frame.
+	configureReadPump(conn)
 	go func() {
 		defer cancel()
-		conn.SetReadDeadline(time.Now().Add(pongWait))
-		conn.SetPongHandler(func(string) error {
-			return conn.SetReadDeadline(time.Now().Add(pongWait))
-		})
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				return
