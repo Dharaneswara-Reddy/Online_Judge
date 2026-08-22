@@ -306,9 +306,20 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 			companyController.TagProblem)
 	}
 
-	// 12. Mount the public landing-page endpoints
-	statsController := controllers.NewStatsController(db, problemSvc, submissionSvc, warRoomSvc)
-	router.GET("/api/stats/summary", statsController.Summary)
+	// 12. Mount the public landing-page endpoints.
+	//
+	//     The summary is unauthenticated and expensive (four counts, one
+	//     of them a full collection scan). It is cached inside the
+	//     controller and throttled per address here, so an anonymous
+	//     caller cannot turn a refresh loop into unbounded database work.
+	//     The limit is generous — this is the first request a real
+	//     visitor makes — and degrades open, because a Redis blip should
+	//     not take down the landing page.
+	statsController := controllers.NewStatsController(db, problemSvc, submissionSvc, warRoomSvc,
+		controllers.DefaultStatsCacheTTL)
+	router.GET("/api/stats/summary",
+		middleware.RateLimitByIP(deps.Limiter, "stats-summary", 60, time.Minute),
+		statsController.Summary)
 	publicProblems.GET("/recent", statsController.RecentProblems)
 
 	// 13. Return the configured router
