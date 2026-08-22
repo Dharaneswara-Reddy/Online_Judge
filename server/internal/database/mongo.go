@@ -15,6 +15,75 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+// Driver limits for a single small instance.
+//
+// The driver's defaults assume a large fleet talking to a large cluster:
+// 100 connections per host (200 across a two-host Atlas replica set), a
+// 30 second server-selection timeout, and no default operation timeout
+// at all. Every one of those is the wrong end of the trade-off here.
+const (
+	// maxPoolSize caps connections per server. The API runs on two vCPUs
+	// inside a small memory limit, and each pooled connection costs a
+	// socket plus the driver's per-connection read/write buffers — a few
+	// hundred idle connections are a real slice of the process's heap for
+	// work the CPU could never do in parallel anyway. Twenty leaves ample
+	// headroom over the handful of concurrent database operations a
+	// two-vCPU box can actually make progress on, while still absorbing a
+	// burst of requests that are all waiting on Mongo at once.
+	maxPoolSize uint64 = 20
+
+	// minPoolSize keeps a couple of connections warm so the first request
+	// after an idle period does not pay a TCP and TLS handshake to Atlas.
+	minPoolSize uint64 = 2
+
+	// maxConnIdleTime returns memory and sockets to the OS after a burst
+	// instead of holding the high-water mark until the process restarts.
+	maxConnIdleTime = 60 * time.Second
+
+	// serverSelectionTimeout is how long an operation waits for a usable
+	// server before failing. The 30 second default means an unreachable
+	// Atlas turns every in-flight request into a 30 second hang, which
+	// exhausts the HTTP server long before anyone sees an error. Five
+	// seconds still rides out a normal replica-set election (typically
+	// well under two seconds) while failing fast on a real outage.
+	serverSelectionTimeout = 5 * time.Second
+
+	// connectTimeout bounds one TCP + TLS handshake to Atlas.
+	connectTimeout = 5 * time.Second
+
+	// operationTimeout is the client-level deadline applied to any
+	// operation whose context carries none of its own — which is every
+	// query made from an HTTP handler, since Gin's request context has no
+	// deadline. Without it a stalled operation blocks a goroutine (and
+	// its pooled connection) indefinitely. Callers that legitimately need
+	// longer, such as the index builds below, set their own deadline: the
+	// driver only applies this timeout when the context has none.
+	operationTimeout = 10 * time.Second
+)
+
+// clientOptions builds the driver options used for every connection.
+//
+// The limits are applied after ApplyURI so they win over anything in the
+// connection string: they are a safety envelope for this deployment, not
+// a default to be talked out of by a copy-pasted Atlas URI.
+func clientOptions(uri string) *options.ClientOptions {
+	return options.Client().
+		ApplyURI(uri).
+		// ObjectIDAsHexString lets documents whose _id is an ObjectID
+		// decode into a plain Go string field. Domain types such as
+		// problem.Problem and submission.Submission model their ID as a
+		// string so the domain packages stay free of driver types;
+		// without this option every read of those collections fails to
+		// decode.
+		SetBSONOptions(&options.BSONOptions{ObjectIDAsHexString: true}).
+		SetMaxPoolSize(maxPoolSize).
+		SetMinPoolSize(minPoolSize).
+		SetMaxConnIdleTime(maxConnIdleTime).
+		SetServerSelectionTimeout(serverSelectionTimeout).
+		SetConnectTimeout(connectTimeout).
+		SetTimeout(operationTimeout)
+}
+
 // Connect establishes a connection to MongoDB Atlas using
 // the provided URI. It pings the server to verify the
 // connection is alive before returning the client.
@@ -22,22 +91,15 @@ func Connect(uri string) (*mongo.Client, error) {
 	// Steps to follow while connecting to MongoDB
 	// =============================================
 
-	// 1. Create a context with a 10-second timeout for the connection attempt
+	// 1. Create a context with a 10-second timeout for the connection
+	//    attempt. Server selection gives up sooner than this in practice,
+	//    so an unreachable database is reported in about five seconds.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 2. Connect to MongoDB using the provided URI.
-	//
-	//    ObjectIDAsHexString lets documents whose _id is an ObjectID
-	//    decode into a plain Go string field. Domain types such as
-	//    problem.Problem and submission.Submission model their ID as a
-	//    string so the domain packages stay free of driver types; without
-	//    this option every read of those collections fails to decode.
-	clientOpts := options.Client().
-		ApplyURI(uri).
-		SetBSONOptions(&options.BSONOptions{ObjectIDAsHexString: true})
-
-	client, err := mongo.Connect(clientOpts)
+	// 2. Connect to MongoDB using the provided URI and the bounded
+	//    resource limits above.
+	client, err := mongo.Connect(clientOptions(uri))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
