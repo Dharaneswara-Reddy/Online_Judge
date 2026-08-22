@@ -2,6 +2,8 @@ package companytag
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 )
 
@@ -14,6 +16,17 @@ type Repository interface {
 	// IncrementSummary bumps the denormalised per-problem count that the
 	// problem list filter reads.
 	IncrementSummary(ctx context.Context, problemID, company string) error
+
+	// Remove deletes one report by id. It exists so a tag whose summary
+	// write failed can be undone, leaving no half-applied state for the
+	// unique index to reject on retry.
+	Remove(ctx context.Context, tagID string) error
+
+	// RecountSummary sets the denormalised count for one company to the
+	// number of reports actually stored for it. The reports are the
+	// authority; the summary is a cache of them, and this is how a cache
+	// that drifted is put back.
+	RecountSummary(ctx context.Context, problemID, company string) error
 
 	// ListForProblem returns the aggregated companies for one problem.
 	ListForProblem(ctx context.Context, problemID string) ([]CompanyCount, error)
@@ -72,11 +85,32 @@ func (s *Service) Tag(ctx context.Context, input TagInput) (*Tag, error) {
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := s.repo.Add(ctx, tag); err != nil {
+		if errors.Is(err, ErrAlreadyTagged) {
+			// A duplicate is the one moment we know a report exists and can
+			// cheaply check the cache built from it. If an earlier request
+			// died between the two writes, this is what puts the count back
+			// — the repair is best effort, and its failure must not replace
+			// the answer the caller actually asked about.
+			_ = s.repo.RecountSummary(ctx, input.ProblemID, company)
+		}
 		return nil, err
 	}
 
-	// 3. Only a genuinely new report moves the aggregate count
+	// 3. Only a genuinely new report moves the aggregate count.
+	//
+	//    The two writes cannot be one, so the pair is made recoverable
+	//    instead: a failed summary write undoes the report, which leaves
+	//    the two in step and lets the caller simply try again. Without
+	//    that, the report stayed and the unique index rejected the very
+	//    retry that would have fixed the count.
 	if err := s.repo.IncrementSummary(ctx, input.ProblemID, company); err != nil {
+		if removeErr := s.repo.Remove(ctx, tag.ID); removeErr != nil {
+			// Both writes failed to settle. Say so plainly: the count is
+			// short by one until someone tags this company again, and a
+			// caller told only "try again" would be misled.
+			return nil, fmt.Errorf("%w: tagged %s but the count was not updated (%v), and the report could not be undone (%v)",
+				ErrSummaryOutOfStep, company, err, removeErr)
+		}
 		return nil, err
 	}
 	return tag, nil

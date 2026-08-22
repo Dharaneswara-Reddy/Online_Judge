@@ -36,17 +36,11 @@ func (s *Service) Create(ctx context.Context, input CreateProblemInput) (*Proble
 		return nil, err
 	}
 
-	// Empty slices rather than nil: a nil slice is stored as BSON null,
-	// and later array updates ($push of a company tag, for instance)
-	// fail against null.
-	tags := input.Tags
-	if tags == nil {
-		tags = []string{}
-	}
+	input = normalizeCollections(input)
 
 	p := &Problem{
 		Title: input.Title, Slug: slug, Statement: input.Statement,
-		Difficulty: input.Difficulty, Tags: tags,
+		Difficulty: input.Difficulty, Tags: input.Tags,
 		CompanyTags: []CompanyTagSummary{},
 		TimeLimitMS: input.TimeLimitMS, MemoryLimitMB: input.MemoryLimitMB,
 		StarterCode: input.StarterCode, CreatedAt: time.Now().UTC(),
@@ -152,10 +146,29 @@ func (s *Service) SolvedCountsByDifficulty(ctx context.Context, problemIDs []str
 	return counts, nil
 }
 
+// normalizeCollections replaces nil collections with empty ones.
+//
+// A nil slice or map is stored as BSON null, not as an empty array. A
+// problem whose tags are null matches no tag query, so it drops out of
+// every tag view without a trace, and $push cannot append a company tag
+// to null either. Both Create and Update go through here so the two
+// cannot disagree — Update omitting this is exactly how a saved edit
+// used to make a problem vanish from its tags.
+func normalizeCollections(input CreateProblemInput) CreateProblemInput {
+	if input.Tags == nil {
+		input.Tags = []string{}
+	}
+	if input.StarterCode == nil {
+		input.StarterCode = map[string]string{}
+	}
+	return input
+}
+
 func (s *Service) Update(ctx context.Context, id string, input CreateProblemInput) (*Problem, error) {
 	if err := validateProblemInput(input); err != nil {
 		return nil, err
 	}
+	input = normalizeCollections(input)
 	p := &Problem{
 		Title: input.Title, Statement: input.Statement, Difficulty: input.Difficulty,
 		Tags: input.Tags, TimeLimitMS: input.TimeLimitMS, MemoryLimitMB: input.MemoryLimitMB,
@@ -172,6 +185,57 @@ func (s *Service) AddTestCase(ctx context.Context, tc *TestCase) error {
 		return ValidationError{Field: "expectedOutput", Message: "must not be empty"}
 	}
 	return s.repo.AddTestCase(ctx, tc)
+}
+
+// ReplaceTestCases swaps a problem's entire test case set for a new one.
+//
+// It is the only way to correct stored test data — a wrong expected
+// output otherwise survives forever, since the seeder skips problems
+// that already have cases. It is destructive by nature, so callers must
+// ask for it explicitly; nothing invokes it implicitly.
+//
+// The whole replacement is validated before anything is deleted, and an
+// empty set is refused: a problem with no test cases accepts every
+// submission.
+func (s *Service) ReplaceTestCases(ctx context.Context, problemID string, tcs []TestCase) error {
+	// Steps to follow while replacing a problem's test cases
+	// ========================================================
+
+	// 1. Refuse to leave the problem with nothing to judge against
+	if problemID == "" {
+		return ValidationError{Field: "problemId", Message: "is required"}
+	}
+	if len(tcs) == 0 {
+		return ValidationError{Field: "testCases", Message: "must not be empty"}
+	}
+
+	// 2. Validate every replacement first, so a typo in the new set never
+	//    destroys the old one
+	for i := range tcs {
+		if strings.TrimSpace(tcs[i].ExpectedOutput) == "" {
+			return ValidationError{
+				Field:   fmt.Sprintf("testCases[%d].expectedOutput", i),
+				Message: "must not be empty",
+			}
+		}
+	}
+
+	// 3. Drop the old set
+	if _, err := s.repo.DeleteTestCases(ctx, problemID); err != nil {
+		return err
+	}
+
+	// 4. Insert the new one, each case bound to this problem whatever the
+	//    caller filled in
+	for i := range tcs {
+		tc := tcs[i]
+		tc.ID = ""
+		tc.ProblemID = problemID
+		if err := s.repo.AddTestCase(ctx, &tc); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ListPublicTestCases returns ONLY sample test cases. This is the sole

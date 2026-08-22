@@ -3,12 +3,23 @@
 // It also promotes a specified user to admin role.
 //
 // Usage: go run cmd/seed/main.go [--admin-email user@example.com]
+//
+//	[--force-testcases]
+//
+// The seeder never overwrites stored test data unless --force-testcases
+// is passed. Without it the run is read-only for existing problems: it
+// reports which ones hold test cases that differ from the seed set and
+// leaves them alone. That flag exists because test data was otherwise
+// write-once — a wrong expected output could not be corrected in a
+// running deployment through any code path.
 package main
 
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -23,6 +34,10 @@ import (
 
 func main() {
 	adminEmail := flag.String("admin-email", "", "Email of the user to promote to admin")
+	// Off by default and never implied by anything else: it deletes stored
+	// test cases and writes the seed set in their place.
+	forceTestCases := flag.Bool("force-testcases", false,
+		"Replace the stored test cases of seeded problems whose data differs from the seed set (destructive)")
 	flag.Parse()
 
 	_ = godotenv.Load()
@@ -53,12 +68,12 @@ func main() {
 
 	// Seed problems
 	problems := seedProblems()
+	plans := make([]testCasePlan, 0, len(problems))
 	for _, sp := range problems {
 		existing, err := svc.GetBySlug(ctx, problem.Slugify(sp.Input.Title))
 		if err == nil {
 			log.Printf("SKIP: %q already exists (id=%s)", sp.Input.Title, existing.ID)
-			// Still add test cases if missing
-			seedTestCases(ctx, svc, existing.ID, sp.TestCases)
+			plans = append(plans, seedTestCases(ctx, svc, existing.ID, sp, *forceTestCases))
 			continue
 		}
 
@@ -69,10 +84,48 @@ func main() {
 		}
 		log.Printf("CREATED: %q (slug=%s, id=%s)", p.Title, p.Slug, p.ID)
 
-		seedTestCases(ctx, svc, p.ID, sp.TestCases)
+		plans = append(plans, seedTestCases(ctx, svc, p.ID, sp, *forceTestCases))
 	}
 
+	printSummary(plans, *forceTestCases)
 	log.Println("Seed completed successfully!")
+}
+
+// printSummary reports what the run did to test data, and what it left
+// untouched. A drifted problem is named explicitly, with the one command
+// that would fix it — the previous silent "SKIP" is how the ambiguous
+// Two Sum case survived every re-seed.
+func printSummary(plans []testCasePlan, forced bool) {
+	log.Println("——— test case summary ———")
+
+	needsForce := []string{}
+	for _, plan := range plans {
+		switch plan.Action {
+		case actionInsert:
+			log.Printf("  %-28s inserted %d test case(s)", plan.Title, plan.Desired)
+		case actionUpToDate:
+			log.Printf("  %-28s unchanged (%d test case(s) already match)", plan.Title, plan.Existing)
+		case actionReplace:
+			log.Printf("  %-28s REPLACED %d stored test case(s) with %d from the seed set",
+				plan.Title, plan.Existing, plan.Desired)
+		case actionNeedsForce:
+			log.Printf("  %-28s stored %d test case(s) DIFFER from the seed set's %d — left untouched",
+				plan.Title, plan.Existing, plan.Desired)
+			needsForce = append(needsForce, plan.Title)
+		case actionFailed:
+			log.Printf("  %-28s FAILED: %s", plan.Title, plan.Err)
+		}
+	}
+
+	if len(needsForce) == 0 {
+		return
+	}
+	sort.Strings(needsForce)
+	log.Printf("%d problem(s) hold test data that differs from this seed set: %v",
+		len(needsForce), needsForce)
+	if !forced {
+		log.Println("Nothing was overwritten. Re-run with --force-testcases to replace their test cases with the seed set.")
+	}
 }
 
 func promoteAdmin(ctx context.Context, db *mongo.Database, email string) {
@@ -92,25 +145,122 @@ func promoteAdmin(ctx context.Context, db *mongo.Database, email string) {
 	log.Printf("ADMIN: Promoted %q to admin role", email)
 }
 
-func seedTestCases(ctx context.Context, svc *problem.Service, problemID string, tcs []problem.TestCase) {
-	// Check if test cases already exist
-	existing, _ := svc.ListAllTestCases(ctx, problemID)
-	if len(existing) > 0 {
-		log.Printf("  SKIP test cases: %d already exist", len(existing))
-		return
+// What a seeding run decided to do with one problem's test cases.
+const (
+	actionInsert     = "insert"     // the problem had none
+	actionUpToDate   = "up-to-date" // stored data already matches the seed set
+	actionNeedsForce = "needs-force"
+	actionReplace    = "replace"
+	actionFailed     = "failed"
+)
+
+// testCasePlan is what a run decided for one problem, and what it found.
+type testCasePlan struct {
+	Title    string
+	Existing int
+	Desired  int
+	// Differs reports that the stored set is not the seed set — a
+	// different count, a different input, a changed expected output, or a
+	// case that flipped between sample and hidden.
+	Differs bool
+	Action  string
+	Err     string
+}
+
+// planTestCases decides what to do with one problem's stored test cases.
+//
+// It is deliberately separate from the database work: the rule that
+// matters is that force is the only path to a destructive action, and
+// that rule is worth testing without a database in front of it.
+func planTestCases(title string, existing, desired []problem.TestCase, force bool) testCasePlan {
+	plan := testCasePlan{Title: title, Existing: len(existing), Desired: len(desired)}
+
+	if len(existing) == 0 {
+		plan.Action = actionInsert
+		return plan
 	}
-	for i, tc := range tcs {
-		tc.ProblemID = problemID
-		if err := svc.AddTestCase(ctx, &tc); err != nil {
-			log.Printf("  ERROR adding test case %d: %v", i+1, err)
-			continue
-		}
-		label := "hidden"
-		if tc.IsSample {
-			label = "sample"
-		}
-		log.Printf("  ADDED test case %d (%s)", i+1, label)
+
+	plan.Differs = !sameTestCases(existing, desired)
+	switch {
+	case !plan.Differs:
+		plan.Action = actionUpToDate
+	case force:
+		plan.Action = actionReplace
+	default:
+		plan.Action = actionNeedsForce
 	}
+	return plan
+}
+
+// sameTestCases compares two sets by content, ignoring order and stored
+// identifiers. ListTestCases makes no ordering promise, so comparing
+// position by position would report spurious differences.
+func sameTestCases(a, b []problem.TestCase) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	key := func(tc problem.TestCase) string {
+		return fmt.Sprintf("%q|%q|%t", tc.Input, tc.ExpectedOutput, tc.IsSample)
+	}
+	counts := make(map[string]int, len(a))
+	for _, tc := range a {
+		counts[key(tc)]++
+	}
+	for _, tc := range b {
+		k := key(tc)
+		counts[k]--
+		if counts[k] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// seedTestCases brings one problem's test cases in line with the seed
+// set and reports what it did. It only ever deletes when force is true.
+func seedTestCases(ctx context.Context, svc *problem.Service, problemID string, sp seedProblem, force bool) testCasePlan {
+	existing, err := svc.ListAllTestCases(ctx, problemID)
+	if err != nil {
+		log.Printf("  ERROR reading existing test cases: %v", err)
+		return testCasePlan{Title: sp.Input.Title, Action: actionFailed, Err: err.Error()}
+	}
+
+	plan := planTestCases(sp.Input.Title, existing, sp.TestCases, force)
+
+	switch plan.Action {
+	case actionInsert:
+		for i, tc := range sp.TestCases {
+			tc.ProblemID = problemID
+			if err := svc.AddTestCase(ctx, &tc); err != nil {
+				log.Printf("  ERROR adding test case %d: %v", i+1, err)
+				plan.Action = actionFailed
+				plan.Err = err.Error()
+				return plan
+			}
+			label := "hidden"
+			if tc.IsSample {
+				label = "sample"
+			}
+			log.Printf("  ADDED test case %d (%s)", i+1, label)
+		}
+
+	case actionUpToDate:
+		log.Printf("  SKIP test cases: %d already match the seed set", plan.Existing)
+
+	case actionNeedsForce:
+		log.Printf("  SKIP test cases: %d stored differ from the seed set's %d "+
+			"(re-run with --force-testcases to replace them)", plan.Existing, plan.Desired)
+
+	case actionReplace:
+		log.Printf("  REPLACING %d stored test case(s) with %d from the seed set",
+			plan.Existing, plan.Desired)
+		if err := svc.ReplaceTestCases(ctx, problemID, sp.TestCases); err != nil {
+			log.Printf("  ERROR replacing test cases: %v", err)
+			plan.Action = actionFailed
+			plan.Err = err.Error()
+		}
+	}
+	return plan
 }
 
 type seedProblem struct {
@@ -128,14 +278,14 @@ func seedProblems() []seedProblem {
 
 You may assume that each input would have exactly one solution, and you may not use the same element twice.
 
-You can return the answer in any order.
+Print the two indices in increasing order, smaller index first. Judging is an exact match on your output, so the order is part of the answer.
 
 Input Format:
 First line: n (size of array) and target separated by space.
 Second line: n space-separated integers.
 
 Output Format:
-Two space-separated indices (0-indexed).`,
+Two space-separated indices (0-indexed), smaller index first.`,
 				Difficulty:    problem.DifficultyEasy,
 				Tags:          []string{"arrays", "hash-table"},
 				TimeLimitMS:   2000,
@@ -152,7 +302,7 @@ Two space-separated indices (0-indexed).`,
 				{Input: "3 6\n3 2 4", ExpectedOutput: "1 2", IsSample: true},
 				{Input: "2 6\n3 3", ExpectedOutput: "0 1", IsSample: false},
 				{Input: "5 10\n1 2 3 4 6", ExpectedOutput: "3 4", IsSample: false},
-				{Input: "4 8\n1 5 3 7", ExpectedOutput: "0 3", IsSample: false},
+				{Input: "4 8\n1 5 2 7", ExpectedOutput: "0 3", IsSample: false},
 			},
 		},
 
@@ -218,7 +368,7 @@ Print "true" if valid, "false" otherwise.`,
 				{Input: "(]", ExpectedOutput: "false", IsSample: true},
 				{Input: "([)]", ExpectedOutput: "false", IsSample: false},
 				{Input: "{[]}", ExpectedOutput: "true", IsSample: false},
-				{Input: "", ExpectedOutput: "true", IsSample: false},
+				{Input: "]", ExpectedOutput: "false", IsSample: false},
 				{Input: "((((", ExpectedOutput: "false", IsSample: false},
 			},
 		},
@@ -261,12 +411,14 @@ A single integer — the length of the longest common subsequence.`,
 				Title: "Merge Intervals",
 				Statement: `Given an array of intervals where intervals[i] = [start_i, end_i], merge all overlapping intervals, and return an array of the non-overlapping intervals that cover all the intervals in the input.
 
+The input intervals are NOT sorted.
+
 Input Format:
 First line: n (number of intervals).
 Next n lines: two space-separated integers representing start and end of each interval.
 
 Output Format:
-Print merged intervals, one per line, as "start end".`,
+Print the merged intervals sorted by start value, one per line, as "start end".`,
 				Difficulty:    problem.DifficultyMedium,
 				Tags:          []string{"arrays", "sorting"},
 				TimeLimitMS:   2000,
@@ -279,10 +431,10 @@ Print merged intervals, one per line, as "start end".`,
 			},
 			TestCases: []problem.TestCase{
 				{Input: "4\n1 3\n2 6\n8 10\n15 18", ExpectedOutput: "1 6\n8 10\n15 18", IsSample: true},
-				{Input: "2\n1 4\n4 5", ExpectedOutput: "1 5", IsSample: true},
+				{Input: "2\n4 5\n1 4", ExpectedOutput: "1 5", IsSample: true},
 				{Input: "1\n1 1", ExpectedOutput: "1 1", IsSample: false},
-				{Input: "3\n1 10\n2 3\n4 5", ExpectedOutput: "1 10", IsSample: false},
-				{Input: "5\n1 2\n3 4\n5 6\n7 8\n9 10", ExpectedOutput: "1 2\n3 4\n5 6\n7 8\n9 10", IsSample: false},
+				{Input: "3\n4 5\n1 10\n2 3", ExpectedOutput: "1 10", IsSample: false},
+				{Input: "5\n9 10\n1 2\n5 6\n3 4\n7 8", ExpectedOutput: "1 2\n3 4\n5 6\n7 8\n9 10", IsSample: false},
 			},
 		},
 	}

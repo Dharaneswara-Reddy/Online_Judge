@@ -163,6 +163,23 @@ func (r *FakeRepository) AddTestCase(_ context.Context, tc *problem.TestCase) er
 	return nil
 }
 
+// DeleteTestCases drops every test case belonging to one problem.
+func (r *FakeRepository) DeleteTestCases(_ context.Context, problemID string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kept := make([]problem.TestCase, 0, len(r.testCases))
+	removed := 0
+	for _, tc := range r.testCases {
+		if tc.ProblemID == problemID {
+			removed++
+			continue
+		}
+		kept = append(kept, tc)
+	}
+	r.testCases = kept
+	return removed, nil
+}
+
 func (r *FakeRepository) ListTestCases(_ context.Context, problemID string, sampleOnly bool) ([]problem.TestCase, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

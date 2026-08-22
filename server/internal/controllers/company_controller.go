@@ -40,7 +40,7 @@ func (cc *CompanyController) TagProblem(c *gin.Context) {
 		Round   string `json:"round"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid request body", "details": err.Error()})
+		writeBindError(c, err)
 		return
 	}
 

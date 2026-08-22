@@ -21,6 +21,13 @@ import (
 // the same company twice.
 var ErrAlreadyTagged = errors.New("you have already tagged this problem with that company")
 
+// ErrSummaryOutOfStep is returned when a report was stored but the
+// denormalised count could not be updated and the report could not be
+// undone either. The reports remain correct — the per-problem summary is
+// short by one until someone tags that company again, which recomputes
+// it from the reports.
+var ErrSummaryOutOfStep = errors.New("company tag summary is out of step with the stored reports")
+
 // Tag is one user's report that a problem appeared at a company.
 type Tag struct {
 	ID        string    `bson:"_id,omitempty" json:"id"`

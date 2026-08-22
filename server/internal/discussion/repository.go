@@ -13,10 +13,15 @@ type Repository interface {
 	// whole and sliced in Go.
 	ListRoots(ctx context.Context, problemID string, after *Cursor, limit int) ([]Comment, error)
 
-	// ListReplies returns the replies belonging to the given parents.
-	// Only the parents on the current page are ever asked for, so this
-	// stays bounded by the page size too.
-	ListReplies(ctx context.Context, parentIDs []string) ([]Comment, error)
+	// ListReplies returns the oldest replies of each given parent, at most
+	// limitPerParent of them per parent. Only the parents on the current
+	// page are asked for, so a call reads at most
+	// len(parentIDs) * limitPerParent rows however large the threads are.
+	//
+	// The limit is per parent, not per call: a global limit would let one
+	// thread with thousands of replies consume the whole budget and leave
+	// the other comments on the page with none.
+	ListReplies(ctx context.Context, parentIDs []string, limitPerParent int) ([]Comment, error)
 
 	// SetUpvote adds or removes one user's vote and returns the resulting
 	// count. It is idempotent: voting twice the same way changes nothing.

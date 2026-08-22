@@ -84,7 +84,7 @@ func (wc *WarRoomController) CreateRoom(c *gin.Context) {
 		MaxParticipants int    `json:"maxParticipants"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid request body", "details": err.Error()})
+		writeBindError(c, err)
 		return
 	}
 

@@ -90,8 +90,10 @@ func (s *Service) ListThreads(ctx context.Context, problemID, viewerID string) (
 // comments newest first, each with its replies oldest first.
 //
 // Only the roots are paginated. Replies are fetched for the roots on this
-// page alone, so both queries stay bounded by the page size and a popular
-// thread can never be pulled into memory whole.
+// page alone and capped at MaxRepliesPerComment each, so one request
+// reads at most pageSize * (MaxRepliesPerComment + 1) rows however large
+// the threads are. A comment whose replies were cut off comes back with
+// HasMoreReplies set, so the truncation is visible rather than silent.
 func (s *Service) ListThreadPage(ctx context.Context, problemID, viewerID, encodedCursor string, limit int) (Page, error) {
 	after, err := DecodeCursor(encodedCursor)
 	if err != nil {
@@ -120,7 +122,9 @@ func (s *Service) ListThreadPage(ctx context.Context, problemID, viewerID, encod
 		parentIDs = append(parentIDs, root.ID)
 	}
 
-	replies, err := s.repo.ListReplies(ctx, parentIDs)
+	// One row past the cap, so a truncated thread is recognisable without
+	// a second count query — the same trick the root page uses.
+	replies, err := s.repo.ListReplies(ctx, parentIDs, MaxRepliesPerComment+1)
 	if err != nil {
 		return Page{}, err
 	}
@@ -137,6 +141,10 @@ func (s *Service) ListThreadPage(ctx context.Context, problemID, viewerID, encod
 		root.UpvotedByMe = viewerID != "" && contains(root.UpvotedBy, viewerID)
 		root.UpvotedBy = nil
 		root.Replies = repliesByParent[root.ID]
+		if len(root.Replies) > MaxRepliesPerComment {
+			root.Replies = root.Replies[:MaxRepliesPerComment]
+			root.HasMoreReplies = true
+		}
 		threads = append(threads, root)
 	}
 

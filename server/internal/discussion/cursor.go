@@ -14,6 +14,15 @@ import (
 const (
 	DefaultPageSize = 20
 	MaxPageSize     = 100
+
+	// MaxRepliesPerComment caps how many replies one comment contributes
+	// to a page. Roots are paginated but replies are not, so without a cap
+	// a single popular comment decides how much memory the request costs:
+	// a thread with 50k replies would be read whole into a process capped
+	// at 112 MB. The cap is per comment rather than per page so one busy
+	// thread cannot use up the whole budget and leave its neighbours
+	// showing nothing.
+	MaxRepliesPerComment = 20
 )
 
 // ErrInvalidCursor is returned when a cursor cannot be decoded. It is a

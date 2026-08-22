@@ -16,6 +16,12 @@ type FakeRepository struct {
 	mu       sync.Mutex
 	nextID   int
 	comments map[string]*discussion.Comment
+
+	// What the last ListReplies call asked for and handed back. The
+	// service is supposed to bound that query, and a test can only assert
+	// it by recording it here.
+	lastReplyLimit int
+	lastReplyRows  int
 }
 
 // New creates an empty FakeRepository.
@@ -82,29 +88,67 @@ func (r *FakeRepository) ListRoots(_ context.Context, problemID string, after *d
 	return roots, nil
 }
 
-// ListReplies returns replies for the given parents, oldest first.
-func (r *FakeRepository) ListReplies(_ context.Context, parentIDs []string) ([]discussion.Comment, error) {
+// ListReplies returns the oldest replies of each parent, oldest first
+// and at most limitPerParent per parent — the same bound the MongoDB
+// implementation applies, so a test cannot pass here and overrun there.
+func (r *FakeRepository) ListReplies(_ context.Context, parentIDs []string, limitPerParent int) ([]discussion.Comment, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	wanted := make(map[string]bool, len(parentIDs))
-	for _, id := range parentIDs {
-		wanted[id] = true
+	r.lastReplyLimit = limitPerParent
+	r.lastReplyRows = 0
+
+	if limitPerParent <= 0 {
+		return []discussion.Comment{}, nil
+	}
+
+	byParent := make(map[string][]discussion.Comment, len(parentIDs))
+	for _, c := range r.comments {
+		if c.IsReply() {
+			byParent[c.ParentID] = append(byParent[c.ParentID], *c)
+		}
 	}
 
 	out := []discussion.Comment{}
-	for _, c := range r.comments {
-		if c.IsReply() && wanted[c.ParentID] {
-			out = append(out, *c)
+	for _, parentID := range parentIDs {
+		replies := byParent[parentID]
+		sortByAge(replies)
+		if len(replies) > limitPerParent {
+			replies = replies[:limitPerParent]
 		}
+		out = append(out, replies...)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].ID < out[j].ID
-		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
-	})
+	r.lastReplyRows = len(out)
+
+	sortByAge(out)
 	return out, nil
+}
+
+// sortByAge orders comments oldest first, with the id as a stable
+// tie-break because timestamps collide.
+func sortByAge(comments []discussion.Comment) {
+	sort.Slice(comments, func(i, j int) bool {
+		if comments[i].CreatedAt.Equal(comments[j].CreatedAt) {
+			return comments[i].ID < comments[j].ID
+		}
+		return comments[i].CreatedAt.Before(comments[j].CreatedAt)
+	})
+}
+
+// LastReplyLimit returns the per-parent limit the last ListReplies call
+// arrived with, so a test can assert the query was actually bounded.
+func (r *FakeRepository) LastReplyLimit() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastReplyLimit
+}
+
+// LastReplyRowCount returns how many replies the last ListReplies call
+// handed back — the rows the process would have held in memory.
+func (r *FakeRepository) LastReplyRowCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastReplyRows
 }
 
 func (r *FakeRepository) SetUpvote(_ context.Context, commentID, userID string, up bool) (int, error) {
