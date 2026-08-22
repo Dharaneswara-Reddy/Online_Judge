@@ -130,7 +130,11 @@ func CreateUser(ctx context.Context, db *mongo.Database, input *RegisterInput) (
 		FullName:     input.FullName,
 		DOB:          dob,
 		Role:         "user",
-		CreatedAt:    time.Now(),
+		// UTC, like every other timestamp in the system. A local-time
+		// value here compared wrongly against fields written by the
+		// judging pipeline, by an amount that depended on the host's
+		// offset — invisible on a UTC machine and quietly wrong elsewhere.
+		CreatedAt: time.Now().UTC(),
 	}
 
 	// 4. Insert the document into the users collection

@@ -45,8 +45,16 @@ export function isTerminalStatus(status) {
  * "queued" and then "running" while the worker picks the job up. If the
  * verdict never arrives within the timeout the last known state is
  * returned, leaving the caller to decide how to present it.
+ *
+ * The timeout deliberately exceeds the server's own evaluation budget.
+ * It used to be exactly 60s, the same number the server allows itself,
+ * so a submission that legitimately used its full budget had the client
+ * give up in the same instant the verdict was being written — and the UI
+ * sat on "Queued" forever for a submission that had in fact been judged.
+ * The extra headroom covers queue wait and the poll interval so the
+ * client sees the terminal state the server did reach.
  */
-export async function pollSubmission(id, { onUpdate, intervalMs = 700, timeoutMs = 60000 } = {}) {
+export async function pollSubmission(id, { onUpdate, intervalMs = 700, timeoutMs = 90000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let latest = null;
 

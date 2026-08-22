@@ -367,6 +367,18 @@ func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin 
 		Stderr:    stderr.String(),
 		ExitCode:  inspect.ExitCode,
 		RuntimeMS: runtimeMS,
+		// Exit 137 is SIGKILL, which the cgroup's OOM killer uses. It is
+		// not ambiguous with the wall-clock timeout despite looking like
+		// it should be: TimedOut is tracked separately and Judge checks it
+		// first, so a run that overran its time is reported as TLE before
+		// this field is ever consulted.
+		//
+		// The container's State.OOMKilled is NOT usable here. User code
+		// runs as an exec inside a container whose main process is
+		// `sleep infinity`, and that flag describes the main process, so
+		// it stays false when the exec'd child is the one killed —
+		// verified by the memory-limit containment test, which fails with
+		// runtime_error instead of mle if this is switched over.
 		OOMKilled: inspect.ExitCode == 137,
 		// A program that overran the output cap is reported as failed
 		// rather than having a truncated prefix compared against the

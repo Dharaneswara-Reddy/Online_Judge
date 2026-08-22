@@ -211,7 +211,12 @@ func (r *MongoRepository) ListTestCases(ctx context.Context, problemID string, s
 		query["is_sample"] = true
 	}
 
-	cursor, err := r.testCases.Find(ctx, query)
+	// Sorted by insertion order. Without a sort MongoDB may return these
+	// in any order, which made failed_case meaningless: the same
+	// submission could blame a different hidden case on each run, and
+	// nobody could reproduce a report. _id is monotonic for generated
+	// ObjectIDs, so this is the order the cases were seeded in.
+	cursor, err := r.testCases.Find(ctx, query, options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}))
 	if err != nil {
 		return nil, fmt.Errorf("list test cases: %w", err)
 	}
