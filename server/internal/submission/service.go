@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/toji339/online-judge/internal/judge"
 )
@@ -25,6 +26,57 @@ const maxPendingPerUser = 1
 // maxCodeBytes caps the source we accept, keeping oversized payloads out
 // of both the queue and the database.
 const maxCodeBytes = 64 * 1024
+
+// MaxCompileErrorBytes caps the compiler output stored on a submission.
+//
+// The judge already buffers up to 1MiB of a program's output, and every
+// byte of it was being persisted verbatim. A template-heavy C++ error, or
+// a deliberately pathological one, is trivially that large, and the
+// collection grows by that much per attempt — on a small Atlas tier a
+// handful of such submissions is the whole storage budget. 16KiB is far
+// more than a reader needs to find the first error, which is the only
+// part anyone looks at.
+const MaxCompileErrorBytes = 16 * 1024
+
+// compileErrorTruncationNotice is appended when output is cut, so the
+// reader knows the message is incomplete rather than the compiler having
+// stopped mid-sentence.
+const compileErrorTruncationNotice = "\n... (truncated: compiler output exceeded the storage limit)"
+
+// Lifecycle timings.
+//
+// StaleClaimAfter is how long a running submission may go without
+// finishing before another worker may take the claim off it. One whole
+// evaluation is bounded at a minute by the worker, so anything running
+// for five is a worker that died holding the claim.
+//
+// PendingTTL and RunningTTL are the reaper's cutoffs. RunningTTL is
+// deliberately longer than StaleClaimAfter, so a redelivery gets its
+// chance to reclaim and finish the work before the reaper writes it off.
+// PendingTTL is longer still: a pending submission may legitimately be
+// sitting behind a queue backlog.
+const (
+	StaleClaimAfter = 5 * time.Minute
+	RunningTTL      = 10 * time.Minute
+	PendingTTL      = 30 * time.Minute
+)
+
+// StaleReason is what a reclaimed submission records as its explanation.
+// It blames the judge, because the judge is what failed.
+const StaleReason = "The judge did not finish this submission — it was reclaimed automatically. Please submit again."
+
+// truncateCompileError bounds stored compiler output, cutting on a rune
+// boundary so the stored string is never invalid UTF-8.
+func truncateCompileError(s string) string {
+	if len(s) <= MaxCompileErrorBytes {
+		return s
+	}
+	cut := MaxCompileErrorBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + compileErrorTruncationNotice
+}
 
 // Service holds the submission business rules and is the only type the
 // controllers and the judge worker talk to.
@@ -100,30 +152,53 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*Submission, e
 	return sub, nil
 }
 
-// MarkRunning flags a submission as picked up by a judge worker.
+// MarkRunning claims a submission for this judge worker.
+//
+// The claim is conditional: it succeeds only while the submission is
+// pending, or while it is running but was claimed longer ago than
+// StaleClaimAfter, which can only mean the worker holding it died. A
+// caller that gets ErrAlreadyClaimed must abandon the job — another
+// worker owns it, and judging it again would race that worker's verdict.
 func (s *Service) MarkRunning(ctx context.Context, id string) error {
-	return s.repo.UpdateStatus(ctx, id, StatusRunning, nil)
+	return s.repo.ClaimForJudging(ctx, id, time.Now().UTC().Add(-StaleClaimAfter))
 }
 
 // MarkJudged writes the final verdict. It is called only by the judge
 // worker — the user-facing API never sets a verdict, which keeps the
 // outcome server-authoritative.
+//
+// The write is conditional on the submission still being running, so of
+// two workers that judged the same submission only the first records a
+// result; the second gets ErrAlreadyJudged and throws its verdict away.
 func (s *Service) MarkJudged(ctx context.Context, id string, result Result) error {
 	if !result.Status.IsTerminal() {
 		return ValidationError{Field: "status", Message: "must be a terminal verdict"}
 	}
-	return s.repo.UpdateStatus(ctx, id, result.Status, &result)
+	result.CompileError = truncateCompileError(result.CompileError)
+	return s.repo.CompleteJudging(ctx, id, result)
 }
 
-// MarkFailed records an infrastructure failure (sandbox crash, worker
-// giving up) as a runtime error so the submission never sits pending
-// forever.
+// MarkFailed records an infrastructure failure — a sandbox that could not
+// be created, a worker that gave up, a queue with nothing behind it — so
+// the submission never sits pending forever holding the user's admission
+// slot.
+//
+// It stores StatusJudgeError rather than a runtime error: the judge
+// failed, and there is no evidence the user's program did. The write is
+// conditional on the submission not already carrying a verdict.
 func (s *Service) MarkFailed(ctx context.Context, id, reason string) error {
-	return s.repo.UpdateStatus(ctx, id, StatusRuntimeError, &Result{
-		Status:       StatusRuntimeError,
-		FailedCase:   -1,
-		CompileError: reason,
-	})
+	return s.repo.FailNonTerminal(ctx, id, StatusJudgeError, truncateCompileError(reason))
+}
+
+// ExpireStale reclaims submissions that no worker will ever finish and
+// reports how many were reclaimed.
+//
+// It exists because the admission-control index covers pending and
+// running submissions: one row nothing completes is one user permanently
+// unable to submit. Run it periodically from the judge worker.
+func (s *Service) ExpireStale(ctx context.Context) (int, error) {
+	now := time.Now().UTC()
+	return s.repo.ExpireStale(ctx, now.Add(-PendingTTL), now.Add(-RunningTTL))
 }
 
 // GetByID returns one submission, or ErrNotFound.

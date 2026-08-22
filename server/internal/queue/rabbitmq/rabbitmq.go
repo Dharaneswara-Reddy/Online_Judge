@@ -465,15 +465,57 @@ func (c *Client) consumeOnce(ctx context.Context, conn *amqp.Connection, lane qu
 	}
 }
 
+// ackAction is what to do with a delivery once its handler has returned.
+type ackAction int
+
+const (
+	// ackDone acknowledges the delivery; the broker forgets it.
+	ackDone ackAction = iota
+	// ackRequeue hands the job back so it is delivered again.
+	ackRequeue
+	// ackDiscard drops the job without retrying it.
+	ackDiscard
+)
+
+// decideAck is the redelivery policy, kept separate from the AMQP calls
+// so it can be tested directly.
+//
+// A failed job used to be discarded outright, on the assumption that the
+// handler had already recorded a terminal state on the submission. That
+// assumption does not hold for the failure that matters most: if the
+// handler could not even read the submission, nothing was written, the
+// row stays pending, and — because the admission-control index covers
+// pending rows — its owner can never submit again.
+//
+// So a failure is retried, but exactly once. RabbitMQ marks the second
+// delivery of a message Redelivered, which bounds the retry without any
+// state of our own and stops a poison message looping forever. Anything
+// still failing after that is dropped and left to the stale-submission
+// reaper, which is the backstop for a row nothing will ever finish.
+func decideAck(handlerErr error, shuttingDown, redelivered bool) ackAction {
+	switch {
+	case handlerErr == nil:
+		return ackDone
+	case shuttingDown:
+		// The handler deliberately leaves the submission non-terminal
+		// when judging is interrupted, so the job must go back.
+		return ackRequeue
+	case !redelivered:
+		return ackRequeue
+	default:
+		return ackDiscard
+	}
+}
+
 // dispatch decodes one delivery, runs the handler, and acknowledges
 // according to the outcome.
 //
 // Delivery semantics are at-least-once: a message is acknowledged only
 // after the handler has returned successfully, so a worker that dies
 // mid-judge leaves the message unacknowledged and the broker redelivers
-// it. The judging pipeline is idempotent — a submission that already
-// carries a terminal verdict is skipped — so a duplicate delivery cannot
-// double-judge or double-count a solve.
+// it. The judging pipeline is idempotent — the claim and the verdict are
+// both conditional writes — so a duplicate delivery cannot double-judge
+// or double-count a solve.
 func dispatch(ctx context.Context, delivery amqp.Delivery, handler queue.Handler) {
 	var job queue.Job
 	if err := json.Unmarshal(delivery.Body, &job); err != nil {
@@ -486,28 +528,22 @@ func dispatch(ctx context.Context, delivery amqp.Delivery, handler queue.Handler
 
 	err := handler(ctx, job)
 
-	switch {
-	case err == nil:
+	switch decideAck(err, ctx.Err() != nil, delivery.Redelivered) {
+	case ackDone:
 		if ackErr := delivery.Ack(false); ackErr != nil {
 			// The verdict is already recorded, so the worst case is a
-			// redelivery that the idempotency check discards.
+			// redelivery that the conditional writes refuse.
 			log.Printf("rabbitmq: could not ack job %s: %v", job.SubmissionID, ackErr)
 		}
 
-	case ctx.Err() != nil:
-		// Shutdown interrupted judging. The handler deliberately leaves
-		// the submission non-terminal in this case, so the job must go
-		// back on the queue rather than being dropped.
-		log.Printf("rabbitmq: requeueing job %s interrupted by shutdown", job.SubmissionID)
+	case ackRequeue:
+		log.Printf("rabbitmq: requeueing job %s for one more attempt: %v", job.SubmissionID, err)
 		if nackErr := delivery.Nack(false, true); nackErr != nil {
 			log.Printf("rabbitmq: could not requeue job %s: %v", job.SubmissionID, nackErr)
 		}
 
-	default:
-		// A genuine judging failure. The handler has already recorded a
-		// terminal state on the submission, so requeueing would only
-		// repeat work that is guaranteed to fail again.
-		log.Printf("rabbitmq: job %s failed: %v", job.SubmissionID, err)
+	case ackDiscard:
+		log.Printf("ERROR: rabbitmq: job %s failed twice, dropping it: %v", job.SubmissionID, err)
 		_ = delivery.Nack(false, false)
 	}
 }

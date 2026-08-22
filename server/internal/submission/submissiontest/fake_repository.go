@@ -18,6 +18,9 @@ type FakeRepository struct {
 	mu     sync.Mutex
 	nextID int
 	items  map[string]*submission.Submission
+	// failNextGet, when set, is returned by the next GetByID and then
+	// cleared. Tests use it to simulate a transient database failure.
+	failNextGet error
 }
 
 // New creates an empty FakeRepository.
@@ -50,12 +53,29 @@ func (r *FakeRepository) Create(_ context.Context, s *submission.Submission) err
 func (r *FakeRepository) GetByID(_ context.Context, id string) (*submission.Submission, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// A one-shot injected failure, so a test can reproduce the read error
+	// that used to leave a submission pending forever.
+	if r.failNextGet != nil {
+		err := r.failNextGet
+		r.failNextGet = nil
+		return nil, err
+	}
+
 	s, ok := r.items[id]
 	if !ok {
 		return nil, submission.ErrNotFound
 	}
 	clone := *s
 	return &clone, nil
+}
+
+// FailNextGet makes the next GetByID return err, standing in for a
+// database that is briefly unreachable. Test-only.
+func (r *FakeRepository) FailNextGet(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failNextGet = err
 }
 
 func (r *FakeRepository) matches(s *submission.Submission, f submission.ListFilter) bool {
@@ -117,26 +137,130 @@ func (r *FakeRepository) Count(_ context.Context, f submission.ListFilter) (int,
 	return n, nil
 }
 
-func (r *FakeRepository) UpdateStatus(_ context.Context, id string, status submission.Status, result *submission.Result) error {
+// ClaimForJudging mirrors the Mongo conditional update: the whole
+// check-and-transition happens under the lock, so a concurrency test
+// against the fake means the same thing a race against the database
+// would.
+func (r *FakeRepository) ClaimForJudging(_ context.Context, id string, staleBefore time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	s, ok := r.items[id]
 	if !ok {
 		return submission.ErrNotFound
 	}
-	s.Status = status
-	if result != nil {
-		s.RuntimeMS = result.RuntimeMS
-		s.MemoryKB = result.MemoryKB
-		s.FailedCase = result.FailedCase
-		s.TotalCases = result.TotalCases
-		s.CompileError = result.CompileError
+	claimable := s.Status == submission.StatusPending ||
+		(s.Status == submission.StatusRunning && s.StartedAt != nil && s.StartedAt.Before(staleBefore))
+	if !claimable {
+		return submission.ErrAlreadyClaimed
 	}
+
+	now := time.Now().UTC()
+	s.Status = submission.StatusRunning
+	s.StartedAt = &now
+	return nil
+}
+
+// CompleteJudging records a verdict only while the submission is running.
+func (r *FakeRepository) CompleteJudging(_ context.Context, id string, result submission.Result) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	s, ok := r.items[id]
+	if !ok {
+		return submission.ErrNotFound
+	}
+	if s.Status != submission.StatusRunning {
+		return submission.ErrAlreadyJudged
+	}
+	applyVerdict(s, result.Status, result)
+	return nil
+}
+
+// FailNonTerminal records a failure only while no verdict exists.
+func (r *FakeRepository) FailNonTerminal(_ context.Context, id string, status submission.Status, reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	s, ok := r.items[id]
+	if !ok {
+		return submission.ErrNotFound
+	}
+	if s.Status.IsTerminal() {
+		return submission.ErrAlreadyJudged
+	}
+	applyVerdict(s, status, submission.Result{
+		Status:       status,
+		FailedCase:   -1,
+		CompileError: reason,
+	})
+	return nil
+}
+
+// ExpireStale reclaims submissions left non-terminal past the cutoffs.
+func (r *FakeRepository) ExpireStale(_ context.Context, pendingBefore, runningBefore time.Time) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	n := 0
+	for _, s := range r.items {
+		stale := false
+		switch s.Status {
+		case submission.StatusPending:
+			stale = s.SubmittedAt.Before(pendingBefore)
+		case submission.StatusRunning:
+			aged := s.SubmittedAt
+			if s.StartedAt != nil {
+				aged = *s.StartedAt
+			}
+			stale = aged.Before(runningBefore)
+		}
+		if !stale {
+			continue
+		}
+		applyVerdict(s, submission.StatusJudgeError, submission.Result{
+			Status:       submission.StatusJudgeError,
+			FailedCase:   -1,
+			CompileError: submission.StaleReason,
+		})
+		n++
+	}
+	return n, nil
+}
+
+// applyVerdict writes a terminal state onto a stored submission. The
+// caller must hold the lock.
+func applyVerdict(s *submission.Submission, status submission.Status, result submission.Result) {
+	s.Status = status
+	s.RuntimeMS = result.RuntimeMS
+	s.MemoryKB = result.MemoryKB
+	s.FailedCase = result.FailedCase
+	s.TotalCases = result.TotalCases
+	s.CompileError = result.CompileError
 	if status.IsTerminal() {
 		now := time.Now().UTC()
 		s.JudgedAt = &now
 	}
-	return nil
+}
+
+// SetSubmittedAt back-dates a submission so a test can age it past a
+// reaper cutoff without sleeping. Test-only.
+func (r *FakeRepository) SetSubmittedAt(id string, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.items[id]; ok {
+		s.SubmittedAt = at
+	}
+}
+
+// SetStartedAt back-dates a running claim, standing in for the worker
+// that took it having died. Test-only.
+func (r *FakeRepository) SetStartedAt(id string, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.items[id]; ok {
+		s.StartedAt = &at
+	}
 }
 
 func (r *FakeRepository) CountPending(_ context.Context, userID string) (int, error) {

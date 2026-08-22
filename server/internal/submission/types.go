@@ -27,10 +27,23 @@ const (
 	// StatusOutputLimitExceeded means the program printed more than the
 	// judge will buffer, so its output could not be compared.
 	StatusOutputLimitExceeded Status = "output_limit_exceeded"
+	// StatusJudgeError means the judge itself failed — the sandbox was
+	// unreachable, the worker died mid-run, the verdict could not be
+	// stored. It is deliberately not a runtime_error: nothing about the
+	// user's program is known to be wrong, and telling them otherwise
+	// sends them debugging code that may well be correct.
+	//
+	// The value matches the "error" status the client already renders as
+	// "Could Not Judge", so no new vocabulary reaches the UI.
+	StatusJudgeError Status = "error"
 )
 
 // IsTerminal reports whether the status is a final verdict, meaning the
 // judge is done with this submission and will not update it again.
+//
+// Only the two transient states are non-terminal, so a status this
+// package does not know about is treated as final rather than leaving a
+// submission holding its owner's admission-control slot forever.
 func (s Status) IsTerminal() bool {
 	switch s {
 	case StatusPending, StatusRunning:
@@ -47,22 +60,27 @@ func (s Status) IsTerminal() bool {
 // the submission was made inside a War Room race, which routes it to the
 // high-priority judging lane.
 type Submission struct {
-	ID           string     `bson:"_id,omitempty" json:"id"`
-	UserID       string     `bson:"user_id" json:"userId"`
-	ProblemID    string     `bson:"problem_id" json:"problemId"`
-	ProblemSlug  string     `bson:"problem_slug" json:"problemSlug"`
-	ProblemTitle string     `bson:"problem_title" json:"problemTitle"`
-	WarRoomID    string     `bson:"war_room_id,omitempty" json:"warRoomId,omitempty"`
-	Language     string     `bson:"language" json:"language"`
-	Code         string     `bson:"code" json:"code"`
-	Status       Status     `bson:"status" json:"status"`
-	RuntimeMS    int64      `bson:"runtime_ms" json:"runtimeMs"`
-	MemoryKB     int64      `bson:"memory_kb" json:"memoryKb"`
-	FailedCase   int        `bson:"failed_case" json:"failedCase"`
-	TotalCases   int        `bson:"total_cases" json:"totalCases"`
-	CompileError string     `bson:"compile_error,omitempty" json:"compileError,omitempty"`
-	SubmittedAt  time.Time  `bson:"submitted_at" json:"submittedAt"`
-	JudgedAt     *time.Time `bson:"judged_at,omitempty" json:"judgedAt,omitempty"`
+	ID           string    `bson:"_id,omitempty" json:"id"`
+	UserID       string    `bson:"user_id" json:"userId"`
+	ProblemID    string    `bson:"problem_id" json:"problemId"`
+	ProblemSlug  string    `bson:"problem_slug" json:"problemSlug"`
+	ProblemTitle string    `bson:"problem_title" json:"problemTitle"`
+	WarRoomID    string    `bson:"war_room_id,omitempty" json:"warRoomId,omitempty"`
+	Language     string    `bson:"language" json:"language"`
+	Code         string    `bson:"code" json:"code"`
+	Status       Status    `bson:"status" json:"status"`
+	RuntimeMS    int64     `bson:"runtime_ms" json:"runtimeMs"`
+	MemoryKB     int64     `bson:"memory_kb" json:"memoryKb"`
+	FailedCase   int       `bson:"failed_case" json:"failedCase"`
+	TotalCases   int       `bson:"total_cases" json:"totalCases"`
+	CompileError string    `bson:"compile_error,omitempty" json:"compileError,omitempty"`
+	SubmittedAt  time.Time `bson:"submitted_at" json:"submittedAt"`
+	// StartedAt is when a judge worker claimed the submission. It is what
+	// makes the claim conditional rather than advisory: a second worker
+	// may only take the claim off a submission whose StartedAt is older
+	// than StaleClaimAfter, which means the holder is gone.
+	StartedAt *time.Time `bson:"started_at,omitempty" json:"startedAt,omitempty"`
+	JudgedAt  *time.Time `bson:"judged_at,omitempty" json:"judgedAt,omitempty"`
 }
 
 // ListFilter narrows a submission history query. Zero values mean "no

@@ -6,16 +6,45 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
 const judgeImage = "codearena-sandbox:latest"
+
+// SandboxLabel marks every container this package creates.
+//
+// It is the only handle a restarted worker has on the containers its
+// predecessor left behind. Nothing else identifies them: they are created
+// from a shared image with a daemon-generated name, so a leaked one is
+// otherwise indistinguishable from any other container on the host.
+const (
+	SandboxLabel      = "codearena.sandbox"
+	sandboxLabelValue = "judge"
+)
+
+// AutoRemove is deliberately NOT set on these containers.
+//
+// The execution model is `sleep infinity` plus exec: the container never
+// exits on its own, so AutoRemove — which fires when the main process
+// exits — would simply never trigger and would buy nothing. Worse, the
+// two places the container can stop (an operator's `docker stop`, the
+// daemon restarting) are exactly the moments when a run is still in
+// flight, and having the daemon delete the container underneath
+// ContainerExecInspect turns a recoverable failure into an unexplained
+// one. Removal stays explicit — Close on the happy path, ReconcileOrphans
+// at startup for whatever a crash left behind.
+
+// reconcileTimeout bounds the startup sweep. It talks to a local socket
+// and removes a handful of containers at most.
+const reconcileTimeout = 60 * time.Second
 
 // Setup budgets, kept separate from the problem's own time limit so
 // infrastructure latency is never charged to the user's program.
@@ -61,6 +90,46 @@ func NewDockerSandbox() (*DockerSandbox, error) {
 	return &DockerSandbox{cli: cli}, nil
 }
 
+// ReconcileOrphans removes every sandbox container left on this host and
+// reports how many it removed.
+//
+// A judge container is started with `sleep infinity`, so removing it is
+// the only thing that ever stops it — there is no exit for the daemon to
+// notice and no timeout inside the container to fire. A worker killed
+// mid-judge therefore leaks a container that holds a vCPU reservation and
+// up to 512MB of memory for as long as the host lives, and they
+// accumulate across every crash. On a two-vCPU instance a couple of those
+// is the whole machine.
+//
+// Call this at worker startup, before consuming anything. It assumes a
+// judge worker is the only judge worker on its Docker host, which is what
+// the deployment does: with two workers sharing a daemon, the second to
+// start would remove the first's in-flight containers.
+func (d *DockerSandbox) ReconcileOrphans(ctx context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
+	defer cancel()
+
+	orphans, err := d.cli.ContainerList(ctx, types.ContainerListOptions{
+		All:     true, // a stopped orphan still holds its disk and its name
+		Filters: filters.NewArgs(filters.Arg("label", SandboxLabel+"="+sandboxLabelValue)),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("list sandbox containers: %w", err)
+	}
+
+	removed := 0
+	for _, c := range orphans {
+		if err := d.cli.ContainerRemove(ctx, c.ID, types.ContainerRemoveOptions{Force: true}); err != nil {
+			// Keep going: one container that refuses to die must not stop
+			// the rest being reclaimed, and the worker can still judge.
+			log.Printf("WARNING: could not remove orphaned sandbox %s: %v", c.ID[:12], err)
+			continue
+		}
+		removed++
+	}
+	return removed, nil
+}
+
 // NewSubmission provisions an isolated container for one submission,
 // writes the source code into it, and returns a handle for
 // compilation and execution.
@@ -97,9 +166,14 @@ func (d *DockerSandbox) NewSubmission(ctx context.Context, language, sourceCode 
 	}
 
 	resp, err := d.cli.ContainerCreate(ctx, &container.Config{
-		Image:      judgeImage,
-		Cmd:        []string{"sleep", "infinity"},
-		User:       "1000:1000",
+		Image: judgeImage,
+		Cmd:   []string{"sleep", "infinity"},
+		User:  "1000:1000",
+		// Every sandbox carries a label so it can be found again after the
+		// worker that made it is gone. Without one, a crashed worker's
+		// containers are indistinguishable from anything else on the host
+		// and nothing can safely clean them up.
+		Labels:     map[string]string{SandboxLabel: sandboxLabelValue},
 		WorkingDir: "/home/sandbox",
 	}, hostConfig, nil, nil, "")
 	if err != nil {
@@ -181,9 +255,17 @@ func (s *dockerSubmission) exec(ctx context.Context, cmd []string, stdin string)
 
 func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin string) (ExecuteResult, error) {
 	execResp, err := s.cli.ContainerExecCreate(ctx, s.containerID, types.ExecConfig{
-		Cmd:          cmd,
-		Env:          []string{"GOCACHE=/tmp/gocache", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin"},
-		AttachStdin:  stdin != "",
+		Cmd: cmd,
+		Env: []string{"GOCACHE=/tmp/gocache", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin"},
+		// stdin is attached unconditionally, even when there is nothing to
+		// send. Attaching only for non-empty input made a test case with
+		// empty input a different shape of execution from every other one:
+		// the program got no stdin at all rather than a stream that is
+		// open and immediately at end-of-file. Whether that difference was
+		// visible then depended on the language, which is the one thing a
+		// judge must never let happen — the verdict has to come from the
+		// program, not from how the runtime reacts to a missing fd.
+		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
 	})
@@ -197,12 +279,16 @@ func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin 
 	}
 	defer attach.Close()
 
-	if stdin != "" {
-		go func() {
+	// Write the input and then close the write half, which is what puts
+	// the stream at end-of-file. An empty input takes the same path: the
+	// program sees an open stdin that immediately reports EOF, exactly as
+	// it would with `prog < /dev/null` on any shell.
+	go func() {
+		if stdin != "" {
 			io.Copy(attach.Conn, bytes.NewBufferString(stdin))
-			attach.CloseWrite()
-		}()
-	}
+		}
+		attach.CloseWrite()
+	}()
 
 	// Output is streamed out of the container and buffered here, in the
 	// judge process — entirely outside the container's memory cgroup. A
