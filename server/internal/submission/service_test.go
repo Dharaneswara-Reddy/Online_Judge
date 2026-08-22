@@ -86,6 +86,7 @@ func TestCreate_AllowsNewSubmissionOncePreviousIsJudged(t *testing.T) {
 	ctx := context.Background()
 	first, err := svc.Create(ctx, validInput())
 	require.NoError(t, err)
+	require.NoError(t, svc.MarkRunning(ctx, first.ID))
 	require.NoError(t, svc.MarkJudged(ctx, first.ID, submission.Result{Status: submission.StatusWrongAnswer, FailedCase: 2}))
 
 	second, err := svc.Create(ctx, validInput())
@@ -276,6 +277,7 @@ func seed(t *testing.T, svc *submission.Service, userID, problemID string, statu
 	in.ProblemID = problemID
 	sub, err := svc.Create(context.Background(), in)
 	require.NoError(t, err)
+	require.NoError(t, svc.MarkRunning(context.Background(), sub.ID))
 	require.NoError(t, svc.MarkJudged(context.Background(), sub.ID, submission.Result{Status: status, FailedCase: -1}))
 	return sub.ID
 }
@@ -287,6 +289,7 @@ func seedRoom(t *testing.T, svc *submission.Service, userID, roomID string, stat
 	in.WarRoomID = roomID
 	sub, err := svc.Create(context.Background(), in)
 	require.NoError(t, err)
+	require.NoError(t, svc.MarkRunning(context.Background(), sub.ID))
 	require.NoError(t, svc.MarkJudged(context.Background(), sub.ID, submission.Result{Status: status, FailedCase: -1}))
 	return sub.ID
 }

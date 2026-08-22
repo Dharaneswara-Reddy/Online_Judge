@@ -55,6 +55,7 @@ func (r *recordingNotifier) SubmissionJudged(_ context.Context, sub *submission.
 type fixture struct {
 	processor *worker.Processor
 	subs      *submission.Service
+	repo      *submissiontest.FakeRepository
 	problems  *problem.Service
 	notifier  *recordingNotifier
 	problemID string
@@ -76,12 +77,14 @@ func newFixture(t *testing.T, sandbox judge.Sandbox) *fixture {
 		ProblemID: prob.ID, Input: "1 2\n", ExpectedOutput: "3\n",
 	}))
 
-	subs := submission.NewService(submissiontest.New())
+	repo := submissiontest.New()
+	subs := submission.NewService(repo)
 	notifier := &recordingNotifier{}
 
 	return &fixture{
 		processor: worker.NewProcessor(subs, problems, sandbox, notifier),
 		subs:      subs,
+		repo:      repo,
 		problems:  problems,
 		notifier:  notifier,
 		problemID: prob.ID,
@@ -177,14 +180,6 @@ func TestProcess_SandboxFailureLeavesNoPendingSubmission(t *testing.T) {
 	stored, _ := f.subs.GetByID(context.Background(), id)
 	assert.True(t, stored.Status.IsTerminal(), "the user never sees a stuck pending submission")
 	assert.Len(t, f.notifier.judged, 1, "listeners still learn the attempt is over")
-}
-
-func TestProcess_UnknownSubmissionIsAnError(t *testing.T) {
-	f := newFixture(t, &stubSandbox{})
-
-	err := f.processor.Process(context.Background(), queue.Job{SubmissionID: "missing"})
-
-	assert.Error(t, err)
 }
 
 func TestProcess_ProblemWithoutTestCasesFailsTheSubmission(t *testing.T) {

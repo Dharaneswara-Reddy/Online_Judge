@@ -6,6 +6,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -54,9 +55,14 @@ func NewProcessor(submissions *submission.Service, problems *problem.Service, sa
 
 // Process judges the submission referenced by a queued job.
 //
-// It is safe to call more than once for the same job: a submission that
-// already carries a terminal verdict is skipped, so a redelivered
-// message cannot overwrite a result or double-count a solve.
+// It is safe to call more than once for the same job, and safe for two
+// workers to call concurrently. Both writes it makes to the submission
+// are conditional on the state it expects to find: claiming the job
+// requires it to still be pending (or abandoned by a dead worker), and
+// recording the verdict requires it to still be running. Losing either
+// race means abandoning the work rather than proceeding — otherwise a
+// redelivery arriving mid-judge flips the verdict, restamps judged_at
+// (which is what decides a War Room winner), and broadcasts twice.
 func (p *Processor) Process(ctx context.Context, job queue.Job) error {
 	// Steps to follow while judging a queued submission
 	// ===================================================
@@ -64,6 +70,15 @@ func (p *Processor) Process(ctx context.Context, job queue.Job) error {
 	// 1. Load the stored submission — it, not the message, holds the code
 	sub, err := p.submissions.GetByID(ctx, job.SubmissionID)
 	if err != nil {
+		// A submission that does not exist can never be judged, so the
+		// message is dropped rather than retried. Any other failure is
+		// reported: the consumer redelivers it once, and if that fails too
+		// the record is left pending for the reaper, which is what stops a
+		// read failure holding the user's admission slot forever.
+		if errors.Is(err, submission.ErrNotFound) {
+			log.Printf("worker: discarding job for unknown submission %s", job.SubmissionID)
+			return nil
+		}
 		return fmt.Errorf("load submission %s: %w", job.SubmissionID, err)
 	}
 	if sub.Status.IsTerminal() {
@@ -88,8 +103,16 @@ func (p *Processor) Process(ctx context.Context, job queue.Job) error {
 		return nil
 	}
 
-	// 3. Flag it as running so the client's poll shows progress
+	// 3. Claim it. The claim is what makes concurrent delivery safe: it
+	//    succeeds only while the submission is still pending, or while it
+	//    is running but was claimed so long ago that the worker holding
+	//    it must be gone. Losing the claim means another worker is on it,
+	//    so acknowledge the message and do nothing.
 	if err := p.submissions.MarkRunning(ctx, sub.ID); err != nil {
+		if errors.Is(err, submission.ErrAlreadyClaimed) {
+			log.Printf("worker: submission %s is already being judged elsewhere, skipping", sub.ID)
+			return nil
+		}
 		p.fail(ctx, sub, "could not start judging")
 		return fmt.Errorf("mark running: %w", err)
 	}
@@ -113,8 +136,15 @@ func (p *Processor) Process(ctx context.Context, job queue.Job) error {
 		return fmt.Errorf("evaluate submission %s: %w", sub.ID, err)
 	}
 
-	// 5. Record the verdict, then announce it
+	// 5. Record the verdict, then announce it. The write is conditional on
+	//    the submission still running, so if another worker judged it
+	//    while we were in the sandbox, this verdict is thrown away rather
+	//    than overwriting theirs — and nothing is broadcast a second time.
 	if err := p.submissions.MarkJudged(ctx, sub.ID, result); err != nil {
+		if errors.Is(err, submission.ErrAlreadyJudged) {
+			log.Printf("worker: submission %s was judged elsewhere, discarding this verdict", sub.ID)
+			return nil
+		}
 		// Without this the record stays "running" forever, and because
 		// admission control counts non-terminal submissions the user would
 		// be refused every future submission from then on.
@@ -162,12 +192,21 @@ func (p *Processor) evaluate(ctx context.Context, sub *submission.Submission, pr
 
 // fail records an infrastructure failure on the submission so it never
 // stays pending, and still notifies listeners waiting on a result.
+//
+// The stored status is StatusJudgeError, not a runtime error: something
+// in the judge broke, and there is no evidence the user's program did.
 func (p *Processor) fail(ctx context.Context, sub *submission.Submission, reason string) {
 	// The caller's context may already be cancelled, so use a fresh one.
 	failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 
 	if err := p.submissions.MarkFailed(failCtx, sub.ID, reason); err != nil {
+		// Losing to a real verdict is the good outcome, not a warning:
+		// the submission is already terminal and someone else told the
+		// listeners about it.
+		if errors.Is(err, submission.ErrAlreadyJudged) {
+			return
+		}
 		log.Printf("WARNING: could not mark submission %s as failed: %v", sub.ID, err)
 		return
 	}

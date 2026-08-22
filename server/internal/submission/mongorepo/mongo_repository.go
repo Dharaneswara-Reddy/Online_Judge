@@ -112,33 +112,151 @@ func (r *MongoRepository) Count(ctx context.Context, f submission.ListFilter) (i
 	return int(n), nil
 }
 
-func (r *MongoRepository) UpdateStatus(ctx context.Context, id string, status submission.Status, result *submission.Result) error {
+// nonTerminal is the set of states a submission can be in while the
+// judge still owns it. It mirrors Status.IsTerminal and is what the
+// admission-control partial index is built on.
+var nonTerminal = []submission.Status{submission.StatusPending, submission.StatusRunning}
+
+// ClaimForJudging takes ownership of a submission in a single conditional
+// update.
+//
+// The preconditions live in the filter, not in a preceding read: two
+// workers handed the same message both see "pending" if they look first,
+// and both then judge it. Expressing the transition as
+// pending -> running (or a stale running -> running) means the database
+// settles the race and exactly one worker proceeds.
+func (r *MongoRepository) ClaimForJudging(ctx context.Context, id string, staleBefore time.Time) error {
 	oid, err := bson.ObjectIDFromHex(id)
 	if err != nil {
 		return submission.ErrNotFound
 	}
 
-	set := bson.M{"status": status}
-	if result != nil {
-		set["runtime_ms"] = result.RuntimeMS
-		set["memory_kb"] = result.MemoryKB
-		set["failed_case"] = result.FailedCase
-		set["total_cases"] = result.TotalCases
-		set["compile_error"] = result.CompileError
+	filter := bson.M{"_id": oid, "$or": []bson.M{
+		{"status": submission.StatusPending},
+		// A running claim may only be taken over once it is old enough
+		// that the worker holding it cannot still be alive.
+		{"status": submission.StatusRunning, "started_at": bson.M{"$lt": staleBefore}},
+	}}
+	update := bson.M{"$set": bson.M{
+		"status":     submission.StatusRunning,
+		"started_at": time.Now().UTC(),
+	}}
+
+	res, err := r.submissions.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("claim submission for judging: %w", err)
 	}
-	// judged_at is stamped server-side, never taken from a client.
+	if res.MatchedCount == 0 {
+		return r.explainMiss(ctx, oid, submission.ErrAlreadyClaimed)
+	}
+	return nil
+}
+
+// CompleteJudging writes the verdict only while the submission is still
+// running, so a second worker that finished the same job discards its
+// result instead of flipping the verdict and restamping judged_at.
+func (r *MongoRepository) CompleteJudging(ctx context.Context, id string, result submission.Result) error {
+	oid, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return submission.ErrNotFound
+	}
+
+	res, err := r.submissions.UpdateOne(ctx,
+		bson.M{"_id": oid, "status": submission.StatusRunning},
+		bson.M{"$set": verdictFields(result.Status, result)},
+	)
+	if err != nil {
+		return fmt.Errorf("record verdict: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return r.explainMiss(ctx, oid, submission.ErrAlreadyJudged)
+	}
+	return nil
+}
+
+// FailNonTerminal records an infrastructure failure, but never over a
+// verdict that has already been decided.
+func (r *MongoRepository) FailNonTerminal(ctx context.Context, id string, status submission.Status, reason string) error {
+	oid, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return submission.ErrNotFound
+	}
+
+	res, err := r.submissions.UpdateOne(ctx,
+		bson.M{"_id": oid, "status": bson.M{"$in": nonTerminal}},
+		bson.M{"$set": verdictFields(status, submission.Result{
+			Status:       status,
+			FailedCase:   -1,
+			CompileError: reason,
+		})},
+	)
+	if err != nil {
+		return fmt.Errorf("fail submission: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return r.explainMiss(ctx, oid, submission.ErrAlreadyJudged)
+	}
+	return nil
+}
+
+// ExpireStale reclaims submissions no worker will ever finish.
+//
+// It is one UpdateMany rather than a read-then-write loop, so several
+// workers running the reaper on the same schedule cannot each reclaim the
+// same rows: whichever runs first moves them out of the filter.
+func (r *MongoRepository) ExpireStale(ctx context.Context, pendingBefore, runningBefore time.Time) (int, error) {
+	filter := bson.M{"$or": []bson.M{
+		{"status": submission.StatusPending, "submitted_at": bson.M{"$lt": pendingBefore}},
+		{"status": submission.StatusRunning, "started_at": bson.M{"$lt": runningBefore}},
+		// A running submission with no started_at predates this field.
+		// Age it by submitted_at so it can still be reclaimed.
+		{"status": submission.StatusRunning, "started_at": nil, "submitted_at": bson.M{"$lt": runningBefore}},
+	}}
+
+	res, err := r.submissions.UpdateMany(ctx, filter, bson.M{"$set": verdictFields(
+		submission.StatusJudgeError,
+		submission.Result{
+			Status:       submission.StatusJudgeError,
+			FailedCase:   -1,
+			CompileError: submission.StaleReason,
+		},
+	)})
+	if err != nil {
+		return 0, fmt.Errorf("expire stale submissions: %w", err)
+	}
+	return int(res.ModifiedCount), nil
+}
+
+// verdictFields builds the $set document for a terminal transition.
+// judged_at is stamped here, server-side, and never taken from a client.
+func verdictFields(status submission.Status, result submission.Result) bson.M {
+	set := bson.M{
+		"status":        status,
+		"runtime_ms":    result.RuntimeMS,
+		"memory_kb":     result.MemoryKB,
+		"failed_case":   result.FailedCase,
+		"total_cases":   result.TotalCases,
+		"compile_error": result.CompileError,
+	}
 	if status.IsTerminal() {
 		set["judged_at"] = time.Now().UTC()
 	}
+	return set
+}
 
-	res, err := r.submissions.UpdateOne(ctx, bson.M{"_id": oid}, bson.M{"$set": set})
-	if err != nil {
-		return fmt.Errorf("update submission status: %w", err)
-	}
-	if res.MatchedCount == 0 {
+// explainMiss turns a MatchedCount of zero into the right error: the
+// submission either does not exist, or it does and its state no longer
+// permits the transition.
+func (r *MongoRepository) explainMiss(ctx context.Context, oid bson.ObjectID, conflict error) error {
+	err := r.submissions.FindOne(ctx, bson.M{"_id": oid}, options.FindOne().
+		SetProjection(bson.M{"_id": 1})).Err()
+	if errors.Is(err, mongo.ErrNoDocuments) {
 		return submission.ErrNotFound
 	}
-	return nil
+	if err != nil {
+		return fmt.Errorf("inspect submission after conditional write: %w", err)
+	}
+	return conflict
 }
 
 func (r *MongoRepository) CountPending(ctx context.Context, userID string) (int, error) {
