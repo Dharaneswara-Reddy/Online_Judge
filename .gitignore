@@ -1,5 +1,19 @@
-# Environment variables
+# Environment variables and secrets.
+#
+# A bare `.env` matched only that exact name, so every variant walked
+# straight past it: `.env.local`, `.env.production`, and `server/.env.test`,
+# which the Go test suite now reads for its MongoDB URI. Ignore the whole
+# family, then re-admit committed templates by name — that way adding a new
+# environment never depends on remembering to extend this list.
 .env
+.env.*
+*.env
+
+# Templates are documentation, not secrets, and are meant to be committed.
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.template
 
 # Go
 # Compiled binaries only. These patterns are anchored with a leading
