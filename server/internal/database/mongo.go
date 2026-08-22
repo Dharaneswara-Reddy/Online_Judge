@@ -128,13 +128,45 @@ func Disconnect(client *mongo.Client) {
 	}
 }
 
-// EnsureIndexes creates the required unique indexes on the
-// users collection. These indexes enforce that no two users
-// can share the same username or email address.
+// ensure creates each index, logging and carrying on past a failure.
 //
-// Indexes are created idempotently — calling this function
-// multiple times is safe. If the indexes already exist,
-// MongoDB simply returns them without error.
+// One index at a time rather than one CreateMany per collection: a batch
+// is refused as a whole, so a single index that cannot be built — the
+// partial unique one below is the realistic case, on a database that
+// already holds duplicate in-flight submissions — would silently cost
+// its neighbours as well.
+//
+// A failure here is loud but never fatal. A missing index degrades a
+// guarantee (a constraint stops being enforced, a query gets slower);
+// refusing to start degrades everything, and on a restored backup or a
+// database left dirty by a crashed run it would be an unbootable
+// service that no amount of restarting fixes.
+func ensure(ctx context.Context, coll *mongo.Collection, models []mongo.IndexModel) {
+	created := 0
+	for _, model := range models {
+		if _, err := coll.Indexes().CreateOne(ctx, model); err != nil {
+			log.Printf("ERROR: could not build index %v on %q: %v — "+
+				"the service is starting without it and the guarantee it enforces is degraded",
+				model.Keys, coll.Name(), err)
+			continue
+		}
+		created++
+	}
+	log.Printf("%s: %d of %d indexes ensured", coll.Name(), created, len(models))
+}
+
+// EnsureIndexes creates every index the application relies on, across
+// all collections — uniqueness constraints, the compound indexes the
+// listing queries sort on, and the partial unique index that enforces
+// submission admission control.
+//
+// Indexes are created idempotently — calling this function multiple
+// times is safe. If the indexes already exist, MongoDB simply returns
+// them without error.
+//
+// It does not return an error when an index cannot be built; see ensure
+// for why. The error result is retained for a condition that genuinely
+// should stop startup, should one ever arise.
 func EnsureIndexes(db *mongo.Database) error {
 	// Steps to follow while creating indexes
 	// ========================================
@@ -156,19 +188,15 @@ func EnsureIndexes(db *mongo.Database) error {
 		},
 	}
 
-	// 3. Create the indexes on the collection
-	// Index builds on a collection with millions of documents take
-	// far longer than a request would; a short budget here means the
-	// API refuses to start rather than waiting.
+	// 3. Create the indexes on the collection.
+	// One budget covers every build below. Index builds on a collection
+	// with millions of documents take far longer than a request would,
+	// so this is generous; when it runs out the remaining builds are
+	// logged as failures and startup continues without them.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	_, err := collection.Indexes().CreateMany(ctx, indexes)
-	if err != nil {
-		return fmt.Errorf("failed to create indexes: %w", err)
-	}
-
-	log.Println("User indexes created successfully")
+	ensure(ctx, collection, indexes)
 
 	// --- Problem collection indexes ---
 	problemsColl := db.Collection("problems")
@@ -201,11 +229,7 @@ func EnsureIndexes(db *mongo.Database) error {
 			Keys: bson.D{{Key: "company_tags.company", Value: 1}, {Key: "created_at", Value: -1}},
 		},
 	}
-	_, err = problemsColl.Indexes().CreateMany(ctx, problemIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create problem indexes: %w", err)
-	}
-	log.Println("Problem indexes created successfully")
+	ensure(ctx, problemsColl, problemIndexes)
 
 	// --- Test case collection indexes ---
 	testCasesColl := db.Collection("test_cases")
@@ -217,11 +241,7 @@ func EnsureIndexes(db *mongo.Database) error {
 			},
 		},
 	}
-	_, err = testCasesColl.Indexes().CreateMany(ctx, testCaseIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create test case indexes: %w", err)
-	}
-	log.Println("Test case indexes created successfully")
+	ensure(ctx, testCasesColl, testCaseIndexes)
 
 	// --- Submission collection indexes ---
 	// The compound user/time index backs the submission history page,
@@ -277,11 +297,7 @@ func EnsureIndexes(db *mongo.Database) error {
 				}),
 		},
 	}
-	_, err = submissionsColl.Indexes().CreateMany(ctx, submissionIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create submission indexes: %w", err)
-	}
-	log.Println("Submission indexes created successfully")
+	ensure(ctx, submissionsColl, submissionIndexes)
 
 	// --- War room collection indexes ---
 	// The room code is the shareable join key, so it must be unique.
@@ -305,11 +321,7 @@ func EnsureIndexes(db *mongo.Database) error {
 			Keys: bson.D{{Key: "status", Value: 1}, {Key: "started_at", Value: 1}},
 		},
 	}
-	_, err = warRoomsColl.Indexes().CreateMany(ctx, warRoomIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create war room indexes: %w", err)
-	}
-	log.Println("War room indexes created successfully")
+	ensure(ctx, warRoomsColl, warRoomIndexes)
 
 	// --- Discussion collection indexes ---
 	discussionsColl := db.Collection("discussions")
@@ -335,11 +347,7 @@ func EnsureIndexes(db *mongo.Database) error {
 			},
 		},
 	}
-	_, err = discussionsColl.Indexes().CreateMany(ctx, discussionIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create discussion indexes: %w", err)
-	}
-	log.Println("Discussion indexes created successfully")
+	ensure(ctx, discussionsColl, discussionIndexes)
 
 	// --- Company tag collection indexes ---
 	// The unique compound index is the constraint that stops one user
@@ -358,11 +366,7 @@ func EnsureIndexes(db *mongo.Database) error {
 			Keys: bson.D{{Key: "company", Value: 1}},
 		},
 	}
-	_, err = companyTagsColl.Indexes().CreateMany(ctx, companyTagIndexes)
-	if err != nil {
-		return fmt.Errorf("failed to create company tag indexes: %w", err)
-	}
-	log.Println("Company tag indexes created successfully")
+	ensure(ctx, companyTagsColl, companyTagIndexes)
 
 	return nil
 }
