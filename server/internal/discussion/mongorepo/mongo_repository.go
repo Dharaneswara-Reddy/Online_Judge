@@ -131,41 +131,66 @@ func (r *MongoRepository) ListReplies(ctx context.Context, parentIDs []string) (
 	return replies, nil
 }
 
-// SetUpvote adds or removes a voter using $addToSet / $pull, which are
-// idempotent by construction — this is what stops vote stuffing without
-// needing a read-then-write. The counter is then recomputed from the
-// voter set so the two can never drift apart.
+// SetUpvote adds or removes a voter and returns the resulting count.
+//
+// Voting is idempotent — adding a voter already in the set changes
+// nothing — which is what stops vote stuffing without a read-then-write.
+//
+// The voter set and the denormalised counter are updated by a single
+// aggregation-pipeline update, so every reader sees them agree. They
+// used to be two statements with the count recomputed in Go between
+// them, and that could not hold: concurrent votes both read the same
+// intermediate set and the later write put back a count that was already
+// stale, so the counter drifted below the voter set. A process dying
+// between the two statements left the drift permanently.
 func (r *MongoRepository) SetUpvote(ctx context.Context, commentID, userID string, up bool) (int, error) {
 	oid, err := bson.ObjectIDFromHex(commentID)
 	if err != nil {
 		return 0, discussion.ErrNotFound
 	}
 
-	var update bson.M
+	// Older comments have no upvoted_by field at all; treat that as empty.
+	voters := bson.M{"$ifNull": bson.A{"$upvoted_by", bson.A{}}}
+
+	var nextVoters bson.M
 	if up {
-		update = bson.M{"$addToSet": bson.M{"upvoted_by": userID}}
+		// Append only when absent, which keeps the set unique while
+		// preserving the order votes arrived in.
+		nextVoters = bson.M{"$cond": bson.A{
+			bson.M{"$in": bson.A{userID, voters}},
+			voters,
+			bson.M{"$concatArrays": bson.A{voters, bson.A{userID}}},
+		}}
 	} else {
-		update = bson.M{"$pull": bson.M{"upvoted_by": userID}}
+		nextVoters = bson.M{"$filter": bson.M{
+			"input": voters,
+			"cond":  bson.M{"$ne": bson.A{"$$this", userID}},
+		}}
 	}
 
-	result, err := r.comments.UpdateOne(ctx, bson.M{"_id": oid}, update)
+	// Two stages, one atomic update: the second stage counts what the
+	// first stage just wrote, so the counter is derived from the voter
+	// set inside the same operation.
+	update := mongo.Pipeline{
+		{{Key: "$set", Value: bson.M{"upvoted_by": nextVoters}}},
+		{{Key: "$set", Value: bson.M{"upvotes": bson.M{"$size": "$upvoted_by"}}}},
+	}
+
+	opts := options.FindOneAndUpdate().
+		SetReturnDocument(options.After).
+		SetProjection(bson.M{"upvotes": 1})
+
+	var updated struct {
+		Upvotes int `bson:"upvotes"`
+	}
+	err = r.comments.FindOneAndUpdate(ctx, bson.M{"_id": oid}, update, opts).Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return 0, discussion.ErrNotFound
+	}
 	if err != nil {
 		return 0, fmt.Errorf("set upvote: %w", err)
 	}
-	if result.MatchedCount == 0 {
-		return 0, discussion.ErrNotFound
-	}
-
-	// Recompute the denormalised count from the authoritative voter set.
-	comment, err := r.GetByID(ctx, commentID)
-	if err != nil {
-		return 0, err
-	}
-	count := len(comment.UpvotedBy)
-	if _, err := r.comments.UpdateOne(ctx, bson.M{"_id": oid}, bson.M{"$set": bson.M{"upvotes": count}}); err != nil {
-		return 0, fmt.Errorf("update upvote count: %w", err)
-	}
-	return count, nil
+	return updated.Upvotes, nil
 }
 
 func (r *MongoRepository) SoftDelete(ctx context.Context, commentID string) error {
