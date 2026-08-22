@@ -148,6 +148,21 @@ jobs:
         with:
           ref: ${{ steps.rel.outputs.sha }}
 
+      # QEMU lets an amd64 runner emulate arm64. It is genuinely slow —
+      # apt-installing a JDK and build-essential under emulation takes
+      # tens of minutes for the sandbox image — but a release runs only on
+      # a merge to main, and correctness matters more than minutes here.
+      #
+      # The faster alternative is a per-architecture matrix on native
+      # runners (ubuntu-24.04-arm is free for public repositories) pushing
+      # by digest, with a manifest-merge job afterwards. That is a much
+      # larger change to a workflow that cannot be tested before it runs
+      # on main, so it is deliberately left as a follow-up rather than
+      # bundled into the migration.
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with:
+          platforms: arm64
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
@@ -167,6 +182,19 @@ jobs:
         with:
           context: ${{ matrix.context }}
           push: true
+          # Both architectures, published as one manifest list per tag.
+          #
+          # arm64 is what production moves to: the instance becomes a
+          # t4g.small (AWS Graviton2), which has twice the memory of the
+          # t3.micro it replaces and is free until 2026-12-31. amd64 is
+          # kept rather than dropped, because it is the rollback path —
+          # the old x86 instance can still pull the same tag and run — and
+          # because contributors on x86 laptops pull these images too.
+          #
+          # A manifest list means neither the compose file nor the deploy
+          # docs need an architecture in them: the daemon picks the right
+          # image for the host it is on.
+          platforms: linux/amd64,linux/arm64
           # ONLY the immutable SHA tag. :latest is moved by the promote
           # job once every image for this commit exists, so the three
           # halves of a deployment can never be published out of step.
@@ -208,6 +236,21 @@ jobs:
       - name: Resolve the commit CI tested
         id: rel
         run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+
+      # QEMU lets an amd64 runner emulate arm64. It is genuinely slow —
+      # apt-installing a JDK and build-essential under emulation takes
+      # tens of minutes for the sandbox image — but a release runs only on
+      # a merge to main, and correctness matters more than minutes here.
+      #
+      # The faster alternative is a per-architecture matrix on native
+      # runners (ubuntu-24.04-arm is free for public repositories) pushing
+      # by digest, with a manifest-merge job afterwards. That is a much
+      # larger change to a workflow that cannot be tested before it runs
+      # on main, so it is deliberately left as a follow-up rather than
+      # bundled into the migration.
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with:
+          platforms: arm64
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 

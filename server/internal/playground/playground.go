@@ -44,7 +44,18 @@ const (
 	DefaultTimeLimitMs   int64 = 3000
 	MaxTimeLimitMs       int64 = 10000
 	DefaultMemoryLimitMB int64 = 256
-	MaxMemoryLimitMB     int64 = 512
+	// 384, not 512. This ceiling is a host capacity decision, not a
+	// generosity decision: MAX_SANDBOXES bounds how many containers exist
+	// at once, and each may claim up to this much, so the product is what
+	// the host has to survive. On the 2 GiB t4g.small that production is
+	// moving to, two sandboxes at 512 MB leaves 47 MB of headroom — a 3%
+	// margin, which is the same knife-edge that OOM-killed the 1 GiB
+	// instance twice. At 384 the same pair leaves about 300 MB.
+	//
+	// It stays well above DefaultMemoryLimitMB, so an ordinary playground
+	// run is unaffected; only a request explicitly asking for more than
+	// 384 MB is clamped, and such a request was always speculative.
+	MaxMemoryLimitMB int64 = 384
 
 	// MaxTestCases bounds how many container executions one request can
 	// trigger; each test case is a separate exec round trip.

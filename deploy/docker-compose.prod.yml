@@ -18,40 +18,67 @@
 # exposed to the internet.
 #
 # ---------------------------------------------------------------------
-# Memory budget — t3.micro, 2 vCPU, 916 MB, no swap
+# Memory budget
 # ---------------------------------------------------------------------
 # Every service below carries a hard `mem_limit`, and `memswap_limit` is
 # set equal to it so a container can never push the host into swap it
-# does not have. The arithmetic has to visibly close:
+# does not have.
 #
-#     916 MB   total physical RAM
-#   - 200 MB   host: kernel, systemd, sshd, dockerd, SSM agent
-#   - 256 MB   ONE judge sandbox container (see the caveat below)
+# Two host sizes are supported. Set MAX_SANDBOXES in deploy/.env to match
+# the host you are on — it is the one setting that must change, and
+# getting it wrong is how this stack has been OOM-killed before.
+#
+#   t3.micro   1 GiB, ~916 MB usable   MAX_SANDBOXES=1
+#   t4g.small  2 GiB, ~1833 MB usable  MAX_SANDBOXES=2   (arm64/Graviton2)
+#
+# The arithmetic for t4g.small, which is what production targets:
+#
+#     1833 MB   usable RAM (2048 MiB less the ~10.5% the kernel and
+#               firmware reserve, the same ratio the t3.micro shows)
+#   -  250 MB   host: kernel, systemd, sshd, dockerd, SSM agent
+#   -  768 MB   TWO judge sandboxes at their 384 MB ceiling
 #   ---------
-#   = 460 MB   available to the compose services
+#   =  815 MB   for the compose services below
 #
-#     160 MB   rabbitmq   (Erlang VM; watermark set below so it throttles
-#                          itself before the cgroup OOM-killer fires)
-#     112 MB   api
-#      96 MB   worker
-#      48 MB   redis      (maxmemory 32mb, so redis evicts before it OOMs)
-#      32 MB   frontend   (nginx serving static files)
+#      160 MB   rabbitmq   (Erlang VM; watermark set below so it throttles
+#                           itself before the cgroup OOM-killer fires)
+#      144 MB   api
+#      112 MB   worker
+#       56 MB   redis      (maxmemory 40mb, so redis evicts before it OOMs)
+#       40 MB   frontend   (nginx serving static files)
 #   ---------
-#     448 MB   committed, leaving 12 MB of slack inside the 460 MB.
+#      512 MB   committed, leaving ~300 MB (17%) genuinely spare.
 #
-# CAVEAT — judge sandboxes are NOT accounted for here. The worker creates
+# That spare margin is the point of the migration. The old host ran at a
+# 12 MB margin with one sandbox; this one runs at ~300 MB with two.
+#
+# The 384 MB figure is playground.MaxMemoryLimitMB, and the two numbers
+# are load-bearing together: MAX_SANDBOXES x MaxMemoryLimitMB is what the
+# host must survive. At the previous 512 MB ceiling, two sandboxes would
+# leave 47 MB — a 3% margin, which is the knife-edge that took the 1 GiB
+# instance down twice. Raise either number only by redoing this sum.
+#
+# CAVEAT — judge sandboxes are NOT compose services. The worker creates
 # them directly through the host Docker daemon, so they are siblings of
-# this stack, not members of it, and compose cannot cap them. Each one
-# asks for 1 vCPU and up to `MemoryLimitMB` (256 MB by default, 512 MB
-# for the largest playground request). The 256 MB line above therefore
-# only holds while at most ONE sandbox runs at a time, which is what
-# MAX_SANDBOXES on the worker service enforces — it is a hard semaphore
-# around container creation, shared by all three consumers in the
-# process, so no lane count or prefetch setting can exceed it.
+# this stack and compose cannot cap them. MAX_SANDBOXES is a hard
+# semaphore around container creation inside the worker, shared by all
+# three of its consumers, so no lane count or prefetch setting can exceed
+# it. The worker logs the real ceiling at startup — read it there.
 #
-# CPU: `cpus` is a ceiling, not a reservation, so the shares below sum to
-# 1.70 of the 2 available on purpose — an idle stack should not be
-# throttled just because a sandbox might want its 1.0 at the same moment.
+# CPU — and why MAX_SANDBOXES stops at 2 on a 2 vCPU host:
+# Each sandbox is created with NanoCPUs 1.0, so two of them is exactly
+# the machine. A third would mean sandboxes sharing cores, and because
+# the time limit is enforced on wall-clock, a program needing one second
+# of CPU would take longer than a second of wall-clock and could be
+# failed for exceeding a limit it never actually exceeded. Concurrency is
+# capped by vCPU count for verdict fairness, not by spare RAM.
+#
+# t4g.small is burstable: 20% baseline (0.4 vCPU sustained) earning 24
+# CPU credits per hour, against the t3.micro's 10% and 6 credits. That is
+# four times the sustained judging capacity, and roughly 290-480
+# submissions per hour before credits are touched. Sustained two-core
+# judging still drains the balance in a few hours, so watch
+# CPUCreditBalance if load ever becomes continuous rather than bursty.
 
 x-logging: &default-logging
   # Unbounded json-file logs fill the 8 GB root volume. A full disk trips
@@ -70,8 +97,8 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
-    mem_limit: 32m
-    memswap_limit: 32m
+    mem_limit: 40m
+    memswap_limit: 40m
     cpus: 0.20
     stop_grace_period: 20s
     logging: *default-logging
@@ -103,8 +130,8 @@ services:
       SECURE_COOKIES: "false"
     expose:
       - "8080"
-    mem_limit: 112m
-    memswap_limit: 112m
+    mem_limit: 144m
+    memswap_limit: 144m
     cpus: 0.60
     stop_grace_period: 30s
     logging: *default-logging
@@ -156,8 +183,8 @@ services:
       # redoing that arithmetic re-opens the out-of-memory failure that
       # took the site down twice.
       MAX_SANDBOXES: ${MAX_SANDBOXES:-1}
-    mem_limit: 96m
-    memswap_limit: 96m
+    mem_limit: 112m
+    memswap_limit: 112m
     cpus: 0.40
     # Shutdown has to finish judging the job in flight and then remove the
     # sandbox container it created. That path can take ~15s, and the
@@ -216,8 +243,8 @@ services:
       - "allkeys-lru"
     expose:
       - "6379"
-    mem_limit: 48m
-    memswap_limit: 48m
+    mem_limit: 56m
+    memswap_limit: 56m
     cpus: 0.15
     stop_grace_period: 10s
     logging: *default-logging
