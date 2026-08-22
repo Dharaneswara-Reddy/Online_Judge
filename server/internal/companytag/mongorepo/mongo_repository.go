@@ -44,47 +44,81 @@ func (r *MongoRepository) Add(ctx context.Context, tag *companytag.Tag) error {
 	return nil
 }
 
+// maxSummaryAttempts bounds the increment retry loop. Each attempt only
+// retries because another writer won the race to append the company, and
+// once the entry exists every later attempt takes the $inc path — so one
+// retry is normally enough and the loop cannot spin for long. The bound
+// is there so a pathological interleaving fails loudly instead of
+// looping forever.
+const maxSummaryAttempts = 10
+
 // IncrementSummary bumps the count for a company inside the problem's
 // denormalised company_tags array, appending the entry when it is the
 // first report for that company.
+//
+// Appending is guarded by a $ne filter so two concurrent first reports
+// cannot create the entry twice. That guard means the append can match
+// nothing — another request appended first — and the increment would be
+// silently dropped, permanently under-reporting the count. So the result
+// is checked and the whole thing retried: the second pass finds the
+// entry and takes the $inc path.
 func (r *MongoRepository) IncrementSummary(ctx context.Context, problemID, company string) error {
 	oid, err := bson.ObjectIDFromHex(problemID)
 	if err != nil {
 		return fmt.Errorf("invalid problem id: %s", problemID)
 	}
 
-	// Try to bump an existing entry first.
-	result, err := r.problems.UpdateOne(ctx,
-		bson.M{"_id": oid, "company_tags.company": company},
-		bson.M{"$inc": bson.M{"company_tags.$.count": 1}},
-	)
-	if err != nil {
-		return fmt.Errorf("increment company tag count: %w", err)
-	}
-	if result.MatchedCount > 0 {
-		return nil
+	for attempt := 0; attempt < maxSummaryAttempts; attempt++ {
+		// Try to bump an existing entry first.
+		result, err := r.problems.UpdateOne(ctx,
+			bson.M{"_id": oid, "company_tags.company": company},
+			bson.M{"$inc": bson.M{"company_tags.$.count": 1}},
+		)
+		if err != nil {
+			return fmt.Errorf("increment company tag count: %w", err)
+		}
+		if result.MatchedCount > 0 {
+			return nil
+		}
+
+		// Problems created before company tags existed store the field as
+		// null, and $push cannot append to null. Normalise those to an empty
+		// array first so the append below always has somewhere to go.
+		if _, err := r.problems.UpdateOne(ctx,
+			bson.M{"_id": oid, "company_tags": nil},
+			bson.M{"$set": bson.M{"company_tags": []any{}}},
+		); err != nil {
+			return fmt.Errorf("initialise company tag summary: %w", err)
+		}
+
+		// No entry yet — append one. The filter guards against a concurrent
+		// insert having just added it.
+		appended, err := r.problems.UpdateOne(ctx,
+			bson.M{"_id": oid, "company_tags.company": bson.M{"$ne": company}},
+			bson.M{"$push": bson.M{"company_tags": bson.M{"company": company, "count": 1}}},
+		)
+		if err != nil {
+			return fmt.Errorf("add company tag summary: %w", err)
+		}
+		if appended.MatchedCount > 0 {
+			return nil
+		}
+
+		// Matched nothing: either the problem is gone, or a concurrent
+		// request appended the entry between the two statements. Tell those
+		// apart, because only the second is worth retrying — otherwise a
+		// deleted problem would spin through every attempt.
+		exists, err := r.problems.CountDocuments(ctx, bson.M{"_id": oid})
+		if err != nil {
+			return fmt.Errorf("check problem exists: %w", err)
+		}
+		if exists == 0 {
+			return fmt.Errorf("problem %s not found", problemID)
+		}
 	}
 
-	// Problems created before company tags existed store the field as
-	// null, and $push cannot append to null. Normalise those to an empty
-	// array first so the append below always has somewhere to go.
-	if _, err := r.problems.UpdateOne(ctx,
-		bson.M{"_id": oid, "company_tags": nil},
-		bson.M{"$set": bson.M{"company_tags": []any{}}},
-	); err != nil {
-		return fmt.Errorf("initialise company tag summary: %w", err)
-	}
-
-	// No entry yet — append one. The filter guards against a concurrent
-	// insert having just added it.
-	_, err = r.problems.UpdateOne(ctx,
-		bson.M{"_id": oid, "company_tags.company": bson.M{"$ne": company}},
-		bson.M{"$push": bson.M{"company_tags": bson.M{"company": company, "count": 1}}},
-	)
-	if err != nil {
-		return fmt.Errorf("add company tag summary: %w", err)
-	}
-	return nil
+	return fmt.Errorf("increment company tag count for %q: gave up after %d attempts",
+		company, maxSummaryAttempts)
 }
 
 func (r *MongoRepository) ListForProblem(ctx context.Context, problemID string) ([]companytag.CompanyCount, error) {
