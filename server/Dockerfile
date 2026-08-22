@@ -19,7 +19,15 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/api    ./cmd/api && \
 
 # Runtime. Alpine rather than scratch because the worker shells out to
 # nothing but does need CA certificates for MongoDB Atlas over TLS.
-FROM alpine:3.20
+#
+# The tag is a branch, not a patch release, so `docker build` picks up
+# security patches within 3.24 without a commit here. Keeping the branch
+# current is a manual job: Alpine supports a branch for two years, and
+# 3.20 — which this used to pin — went end of support on 2026-04-01 and
+# stopped receiving rebuilt images shortly after, so the API and the judge
+# worker were running on a base that no longer got CVE fixes. 3.24 is
+# supported until 2028-06-01; revisit before then.
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 10001 codearena
 COPY --from=build /out/api /out/worker /out/seed /usr/local/bin/
 
