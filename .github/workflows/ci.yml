@@ -56,6 +56,22 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      # The broker recovery tests used to skip silently here: with no
+      # broker reachable they called t.Skipf and Go still exited 0, so
+      # seven tests covering "submissions survive a broker restart" never
+      # ran and nothing said so. They now fail rather than skip whenever
+      # CI is set, which makes this container load-bearing.
+      rabbitmq:
+        image: rabbitmq:4-management
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 15s
+          --health-timeout 10s
+          --health-retries 12
+          --health-start-period 60s
+
     defaults:
       run:
         working-directory: server
@@ -88,14 +104,102 @@ jobs:
       - name: Unit tests (race)
         run: go test ./internal/... -race -count=1
 
-      # Integration tests talk to the service container above.
-      - name: Integration tests
+      # Integration tests talk to the service containers above.
+      #
+      # These carry -race too, and they are the ones that need it most:
+      # the unit tests run in-memory and sequentially, while these drive
+      # real concurrent writes against MongoDB and a real broker. The
+      # race detector was previously on the tests least likely to reveal
+      # a race and off the ones most likely to.
+      - name: Integration tests (race)
         env:
           MONGO_URI: mongodb://localhost:27017
           DB_NAME: online_judge_test
           JWT_SECRET: ci-test-secret-not-used-in-production
           CLIENT_URL: http://localhost:5173
-        run: go test ./tests/... -count=1
+          RABBITMQ_URL: amqp://guest:guest@localhost:5672/
+          # Belt and braces: the suite already fails rather than skips
+          # when CI is set, but naming it here makes the intent explicit.
+          RABBITMQ_REQUIRED: "1"
+        run: go test ./tests/... -count=1 -race
+        timeout-minutes: 30
+
+  sandbox:
+    name: Judge sandbox (containment)
+    runs-on: ubuntu-latest
+
+    # These are the tests that assert the containment boundary holds:
+    # no network, the PID and memory caps, the wall-clock kill, and that
+    # orphaned containers are reclaimed. They sit behind a build tag —
+    # the only one in the tree — and CI never passed it, so they had
+    # never once run here. A commit weakening the sandbox shipped green.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      # The tests drive the real Docker daemon on the runner and need the
+      # judge image present under the exact tag the sandbox looks for.
+      - name: Build the judge sandbox image
+        run: docker build -t codearena-sandbox:latest docker/judge-sandbox
+
+      - name: Containment tests
+        working-directory: server
+        run: go test ./internal/judge/... -tags integration -count=1 -v
+        timeout-minutes: 20
+
+      # A leaked container after the suite means the cleanup path itself
+      # is broken, which is the failure that took the production host
+      # down. Cheap to assert, so assert it.
+      - name: No sandbox containers may be left behind
+        run: |
+          leaked=$(docker ps -aq --filter "label=codearena.sandbox=judge")
+          if [ -n "$leaked" ]; then
+            echo "These sandbox containers outlived the test run:"
+            docker ps -a --filter "label=codearena.sandbox=judge"
+            exit 1
+          fi
+          echo "No leaked sandbox containers."
+
+  scan:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+
+    # Advisory for now: this is the first scanning the project has ever
+    # had, so a hard failure would block every change on a backlog nobody
+    # has triaged yet. Read the summary, fix what it finds, then drop the
+    # continue-on-error lines to make it enforcing.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      # govulncheck reports only vulnerabilities that are actually
+      # reachable from this code, so its output is worth reading rather
+      # than a list of every advisory touching the dependency tree.
+      - name: Go modules (govulncheck)
+        working-directory: server
+        continue-on-error: true
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v4.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: npm audit
+        working-directory: client
+        continue-on-error: true
+        run: npm audit --audit-level=high
 
   client:
     name: Client (React)
