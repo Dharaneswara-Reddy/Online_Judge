@@ -33,6 +33,7 @@ Create `deploy/.env` on the host — never commit it:
     RABBITMQ_USER=<user>
     RABBITMQ_PASSWORD=<password>
     WORKER_COUNT=2
+    MAX_SANDBOXES=1
 
 Get the judge sandbox image (the worker starts a container from it for
 every submission). **Do not build it here** — it apt-installs a JDK and
@@ -48,9 +49,13 @@ by a constant in the Go source rather than by configuration. Repeat both
 lines any time the sandbox image changes, and after anything that prunes
 images.
 
-Then bring the stack up:
+Then pull the application images and bring the stack up. There is no
+`--build` here and no `build:` stanza in the compose file: see "Rolling
+out a new build" below for why building on this host is forbidden.
 
-    cd deploy && docker compose --env-file .env -f docker-compose.prod.yml up -d --build
+    cd deploy
+    docker compose --env-file .env -f docker-compose.prod.yml pull
+    docker compose --env-file .env -f docker-compose.prod.yml up -d --no-build
 
 ## Operating
 
@@ -66,11 +71,35 @@ Then bring the stack up:
     # restart everything
     docker compose -f docker-compose.prod.yml restart
 
-    # redeploy after a code change
-    git pull && docker compose -f docker-compose.prod.yml up -d --build
+    # redeploy after a code change — see "Rolling out a new build"
+    git pull --ff-only
+    docker compose -f docker-compose.prod.yml pull
+    docker compose -f docker-compose.prod.yml up -d --no-build
 
 `restart: unless-stopped` on every service means the stack comes back by
 itself after a reboot, once the Docker daemon starts.
+
+### WORKER_COUNT and MAX_SANDBOXES
+
+These are different settings and the difference matters.
+
+`WORKER_COUNT` is queue prefetch: how many deliveries each consumer
+accepts at once. `MAX_SANDBOXES` is the hard ceiling on judge containers
+alive on this host at any moment, enforced by a semaphore around
+container creation and shared by all three consumers in the worker
+process.
+
+They used to be one number, and that was a bug: the worker runs three
+consumers — the standard lane, the War Room lane and the playground
+responder — each sized from `WORKER_COUNT`, so `WORKER_COUNT=2` meant up
+to **six** containers, not two. Each container may claim a full vCPU and
+up to 512 MB on a 916 MB host.
+
+The memory budget written out at the top of `docker-compose.prod.yml`
+has room for exactly one sandbox. **Raising `MAX_SANDBOXES` without
+redoing that arithmetic re-opens the out-of-memory failure that has
+already taken this host down twice.** The worker logs its real ceiling
+at startup; check it there rather than inferring it from settings.
 
 ## Health
 
