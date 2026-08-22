@@ -1,0 +1,47 @@
+# What the API/worker image build must NOT be given.
+#
+# Two separate reasons this file exists:
+#
+#  1. Secrets. `server/.env` holds the Atlas connection string and the JWT
+#     secret, `server/.env.test` its test-suite equivalent. The Dockerfile
+#     does `COPY . .`, so without this file both are uploaded to the
+#     builder, baked into an image layer, and — because release.yml uses
+#     `cache-to: type=gha,mode=max` — written into a shared GitHub Actions
+#     cache that outlives the run.
+#
+#  2. Cache stability. Anything in the context is part of the hash for the
+#     COPY layer, so a stray local binary or editor swap file busts the
+#     Go build cache for no reason.
+
+# Secrets and local configuration — the whole family, matching .gitignore.
+.env
+.env.*
+*.env
+!.env.example
+
+# Compiled output from a local `go build`.
+tmp/
+api
+worker
+seed
+*.exe
+*.out
+*.test
+
+# Tests do not participate in the image build. `go build ./cmd/...` never
+# compiles them, and the sandbox integration tests need a Docker daemon
+# that the builder deliberately does not offer.
+tests/
+**/*_test.go
+
+# Docker's own inputs are read by the daemon, not copied into the image.
+Dockerfile
+.dockerignore
+
+# Editor and OS noise.
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store

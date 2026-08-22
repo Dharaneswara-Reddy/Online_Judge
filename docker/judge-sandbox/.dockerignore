@@ -1,0 +1,6 @@
+# The sandbox image is built entirely from `apt-get install`; nothing is
+# copied in from the context. Sending an empty context is both the fastest
+# build and the strongest guarantee that no local file can end up inside
+# the image untrusted code runs in.
+*
+!Dockerfile
