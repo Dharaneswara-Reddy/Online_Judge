@@ -115,12 +115,21 @@ func (s *Service) MarkJudged(ctx context.Context, id string, result Result) erro
 	return s.repo.UpdateStatus(ctx, id, result.Status, &result)
 }
 
-// MarkFailed records an infrastructure failure (sandbox crash, worker
-// giving up) as a runtime error so the submission never sits pending
-// forever.
+// MarkFailed records an infrastructure failure — a sandbox that would
+// not start, a worker that gave up, a judge that never reported back.
+//
+// It records StatusError, not a verdict. The judge never ran the code to
+// a conclusion, so claiming it crashed would be a lie told at the user's
+// expense; "Could Not Judge" is the honest answer. The status is still
+// terminal, so the submission never sits pending forever and the user's
+// admission-control slot is released.
+//
+// The reason travels in CompileError, which is the record's only free
+// text field. It is for operators reading the database, not for the UI,
+// which renders that field only for a compile_error verdict.
 func (s *Service) MarkFailed(ctx context.Context, id, reason string) error {
-	return s.repo.UpdateStatus(ctx, id, StatusRuntimeError, &Result{
-		Status:       StatusRuntimeError,
+	return s.repo.UpdateStatus(ctx, id, StatusError, &Result{
+		Status:       StatusError,
 		FailedCase:   -1,
 		CompileError: reason,
 	})

@@ -165,6 +165,41 @@ func TestMarkFailed_ClearsPendingState(t *testing.T) {
 	assert.True(t, stored.Status.IsTerminal(), "a failed submission must not stay pending")
 }
 
+// TestMarkFailed_RecordsAJudgeFailureNotAUserVerdict pins the honest
+// status. A sandbox that could not start is not the user's runtime
+// error, and recording it as one shows "Runtime error on test case 0"
+// for a problem the user did nothing to cause.
+func TestMarkFailed_RecordsAJudgeFailureNotAUserVerdict(t *testing.T) {
+	svc, _ := newService()
+	ctx := context.Background()
+	sub, _ := svc.Create(ctx, validInput())
+
+	require.NoError(t, svc.MarkFailed(ctx, sub.ID, "sandbox unavailable"))
+
+	stored, err := svc.GetByID(ctx, sub.ID)
+	require.NoError(t, err)
+	assert.Equal(t, submission.StatusError, stored.Status,
+		"the client renders this status as Could Not Judge")
+	assert.NotEqual(t, submission.StatusRuntimeError, stored.Status,
+		"a judge failure must never be blamed on the submitted code")
+}
+
+// TestMarkFailed_ReleasesTheAdmissionControlSlot is why the status has
+// to be terminal: the partial unique index only covers pending and
+// running, so a non-terminal failure would hold the user's single
+// in-flight slot forever.
+func TestMarkFailed_ReleasesTheAdmissionControlSlot(t *testing.T) {
+	svc, _ := newService()
+	ctx := context.Background()
+	sub, _ := svc.Create(ctx, validInput())
+	require.NoError(t, svc.MarkFailed(ctx, sub.ID, "docker daemon unreachable"))
+
+	_, err := svc.Create(ctx, validInput())
+
+	assert.NoError(t, err, "the user must be able to submit again straight away")
+	assert.True(t, submission.StatusError.IsTerminal())
+}
+
 func TestGetByID_UnknownReturnsNotFound(t *testing.T) {
 	svc, _ := newService()
 
