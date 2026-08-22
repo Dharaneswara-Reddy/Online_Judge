@@ -6,6 +6,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -64,7 +65,19 @@ func (p *Processor) Process(ctx context.Context, job queue.Job) error {
 	// 1. Load the stored submission — it, not the message, holds the code
 	sub, err := p.submissions.GetByID(ctx, job.SubmissionID)
 	if err != nil {
-		return fmt.Errorf("load submission %s: %w", job.SubmissionID, err)
+		// Nothing has been written to the record at this point, so a
+		// failure here must not cost the message. A submission that does
+		// not exist never will, so that one is permanent and the consumer
+		// should drop it; anything else — an unreachable database, a
+		// timeout — is transient, and dropping it would leave the row
+		// pending forever with the user's only submission slot held by it.
+		if errors.Is(err, submission.ErrNotFound) {
+			return fmt.Errorf("load submission %s: %w", job.SubmissionID, err)
+		}
+		return errors.Join(
+			fmt.Errorf("load submission %s: %w", job.SubmissionID, err),
+			queue.ErrRetryable,
+		)
 	}
 	if sub.Status.IsTerminal() {
 		log.Printf("worker: submission %s already judged (%s), skipping", sub.ID, sub.Status)

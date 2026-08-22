@@ -152,6 +152,31 @@ func (r *MongoRepository) CountPending(ctx context.Context, userID string) (int,
 	return int(n), nil
 }
 
+func (r *MongoRepository) ReclaimStale(ctx context.Context, cutoff time.Time, reason string) (int, error) {
+	// One conditional UpdateMany, not a find-then-update loop. The status
+	// filter is part of the write, so a worker that lands a verdict on
+	// one of these rows in the same instant simply means this update no
+	// longer matches it — the verdict stands, which is the only correct
+	// outcome when verdicts are server-authoritative.
+	res, err := r.submissions.UpdateMany(ctx,
+		bson.M{
+			"status":       bson.M{"$in": []submission.Status{submission.StatusPending, submission.StatusRunning}},
+			"submitted_at": bson.M{"$lt": cutoff},
+		},
+		bson.M{"$set": bson.M{
+			"status":        submission.StatusError,
+			"failed_case":   -1,
+			"compile_error": reason,
+			// judged_at is stamped server-side, as everywhere else.
+			"judged_at": time.Now().UTC(),
+		}},
+	)
+	if err != nil {
+		return 0, fmt.Errorf("reclaim stale submissions: %w", err)
+	}
+	return int(res.ModifiedCount), nil
+}
+
 func (r *MongoRepository) SolvedProblemIDs(ctx context.Context, userID string) ([]string, error) {
 	var ids []string
 	err := r.submissions.Distinct(ctx, "problem_id", bson.M{

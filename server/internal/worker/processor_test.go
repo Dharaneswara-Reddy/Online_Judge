@@ -185,6 +185,52 @@ func TestProcess_UnknownSubmissionIsAnError(t *testing.T) {
 	err := f.processor.Process(context.Background(), queue.Job{SubmissionID: "missing"})
 
 	assert.Error(t, err)
+	assert.False(t, errors.Is(err, queue.ErrRetryable),
+		"a submission that does not exist will not exist on a retry either")
+}
+
+// TestProcess_TransientLoadFailureIsRetryable is the stuck-submission
+// defect. The very first step can fail before any status is written; the
+// consumer then discarded the message, leaving the row pending forever
+// and the user's single in-flight slot held with it.
+func TestProcess_TransientLoadFailureIsRetryable(t *testing.T) {
+	repo := &flakyRepository{FakeRepository: submissiontest.New()}
+	subs := submission.NewService(repo)
+	problems := problem.NewService(problemtest.NewFakeRepository())
+	processor := worker.NewProcessor(subs, problems, &stubSandbox{}, nil)
+
+	ctx := context.Background()
+	sub, err := subs.Create(ctx, submission.CreateInput{
+		UserID: "user-1", ProblemID: "problem-1", Language: "python", Code: "print(3)",
+	})
+	require.NoError(t, err)
+
+	repo.getErr = errors.New("connection refused")
+	err = processor.Process(ctx, queue.Job{SubmissionID: sub.ID})
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, queue.ErrRetryable),
+		"the job must go back on the queue rather than being dropped")
+
+	repo.getErr = nil
+	stored, err := subs.GetByID(ctx, sub.ID)
+	require.NoError(t, err)
+	assert.Equal(t, submission.StatusPending, stored.Status,
+		"nothing was written, so the record is untouched and a retry judges it properly")
+}
+
+// flakyRepository makes the submission store fail on demand, standing in
+// for a database that is briefly unreachable.
+type flakyRepository struct {
+	*submissiontest.FakeRepository
+	getErr error
+}
+
+func (r *flakyRepository) GetByID(ctx context.Context, id string) (*submission.Submission, error) {
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	return r.FakeRepository.GetByID(ctx, id)
 }
 
 func TestProcess_ProblemWithoutTestCasesFailsTheSubmission(t *testing.T) {

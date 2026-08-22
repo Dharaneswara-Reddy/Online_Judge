@@ -503,10 +503,29 @@ func dispatch(ctx context.Context, delivery amqp.Delivery, handler queue.Handler
 			log.Printf("rabbitmq: could not requeue job %s: %v", job.SubmissionID, nackErr)
 		}
 
+	case errors.Is(err, queue.ErrRetryable) && !delivery.Redelivered:
+		// The handler failed before it could record anything, so the
+		// submission is still sitting non-terminal. Dropping the message
+		// would strand it there forever and hold the user's only
+		// admission-control slot with it, so hand it back for another
+		// attempt.
+		//
+		// Exactly one attempt: the redelivered flag is the retry budget.
+		// Requeueing is immediate, with no delay available short of a
+		// dead-letter exchange, so an unbounded policy would turn one
+		// permanently failing message into a hot loop that starves the
+		// lane. A job that exhausts the budget is left to the stale
+		// submission reaper, which reclaims the slot on a timer.
+		log.Printf("rabbitmq: requeueing job %s after a transient failure: %v", job.SubmissionID, err)
+		if nackErr := delivery.Nack(false, true); nackErr != nil {
+			log.Printf("rabbitmq: could not requeue job %s: %v", job.SubmissionID, nackErr)
+		}
+
 	default:
-		// A genuine judging failure. The handler has already recorded a
-		// terminal state on the submission, so requeueing would only
-		// repeat work that is guaranteed to fail again.
+		// A genuine judging failure, or a transient one that has already
+		// had its retry. In the first case the handler has recorded a
+		// terminal state, so requeueing would only repeat work that is
+		// guaranteed to fail again; in the second the reaper takes over.
 		log.Printf("rabbitmq: job %s failed: %v", job.SubmissionID, err)
 		_ = delivery.Nack(false, false)
 	}

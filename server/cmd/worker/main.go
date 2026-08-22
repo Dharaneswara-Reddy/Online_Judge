@@ -123,6 +123,18 @@ func main() {
 		}
 	}()
 
+	// Reclaim submissions the pipeline never finished. A worker killed
+	// between accepting a job and writing a status leaves the row
+	// non-terminal, and the partial unique index behind admission control
+	// then bars that user from submitting anything at all until someone
+	// edits the database. The sweep is a conditional write, so running it
+	// in every worker process at once is safe.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		worker.NewReaper(submissionSvc, worker.DefaultStaleAfter, worker.DefaultSweepInterval).Run(ctx)
+	}()
+
 	log.Printf("Judge worker started with %d concurrent slots per lane", cfg.WorkerCount)
 
 	// Wait for a signal, then let each lane drain. Consume stops taking

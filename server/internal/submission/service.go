@@ -135,6 +135,30 @@ func (s *Service) MarkFailed(ctx context.Context, id, reason string) error {
 	})
 }
 
+// StaleReason is what a reclaimed submission carries as its reason. It
+// is written to be read by the person whose submission it was: the judge
+// is at fault here, not their code, and it says so.
+const StaleReason = "the judge did not report a result for this submission, " +
+	"so it was closed automatically — your code was not rejected, please try again"
+
+// ReclaimStale closes submissions that have been stuck in a non-terminal
+// state for longer than olderThan, and returns how many it closed.
+//
+// Nothing else ever releases them. A worker can die between accepting a
+// job and writing a status — killed, OOM-ed, disconnected from the
+// database — and the row then sits pending forever, holding the user's
+// one admission-control slot and locking them out of submitting at all.
+//
+// The write is conditional on the row still being non-terminal, so a
+// sweep that overlaps a worker finishing the same submission loses the
+// race harmlessly rather than overwriting the verdict.
+func (s *Service) ReclaimStale(ctx context.Context, olderThan time.Duration) (int, error) {
+	if olderThan <= 0 {
+		return 0, ValidationError{Field: "olderThan", Message: "must be positive"}
+	}
+	return s.repo.ReclaimStale(ctx, time.Now().UTC().Add(-olderThan), StaleReason)
+}
+
 // GetByID returns one submission, or ErrNotFound.
 func (s *Service) GetByID(ctx context.Context, id string) (*Submission, error) {
 	return s.repo.GetByID(ctx, id)

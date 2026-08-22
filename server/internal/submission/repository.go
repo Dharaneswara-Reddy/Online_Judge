@@ -1,6 +1,9 @@
 package submission
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Repository is the storage boundary for submissions. The production
 // implementation is MongoDB-backed (see the mongorepo subpackage); unit
@@ -18,6 +21,16 @@ type Repository interface {
 	// CountPending returns how many of a user's submissions are still
 	// waiting or running. Used for admission control.
 	CountPending(ctx context.Context, userID string) (int, error)
+
+	// ReclaimStale moves every submission that has been pending or
+	// running since before cutoff to StatusError, recording reason, and
+	// returns how many it moved.
+	//
+	// It must be a single conditional write over non-terminal rows: a
+	// read-then-write could stamp StatusError over a verdict a worker
+	// wrote in between, and verdicts are server-authoritative — the
+	// judging pipeline is the only thing allowed to decide one.
+	ReclaimStale(ctx context.Context, cutoff time.Time, reason string) (int, error)
 
 	// SolvedProblemIDs returns the distinct problems a user has solved.
 	SolvedProblemIDs(ctx context.Context, userID string) ([]string, error)

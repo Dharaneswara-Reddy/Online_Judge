@@ -272,6 +272,13 @@ func EnsureIndexes(db *mongo.Database) error {
 		{
 			Keys: bson.D{{Key: "status", Value: 1}},
 		},
+		// Backs the stale-submission sweep, which asks for non-terminal
+		// rows older than a cutoff. Both the equality and the range are
+		// in the key, so the sweep touches only the handful of documents
+		// it is about to reclaim rather than every submission ever made.
+		{
+			Keys: bson.D{{Key: "status", Value: 1}, {Key: "submitted_at", Value: 1}},
+		},
 		// Covers both the profile's solved-problem set and its accepted
 		// count without touching a document.
 		{

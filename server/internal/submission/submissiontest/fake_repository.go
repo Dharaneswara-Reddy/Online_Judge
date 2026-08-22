@@ -151,6 +151,39 @@ func (r *FakeRepository) CountPending(_ context.Context, userID string) (int, er
 	return n, nil
 }
 
+func (r *FakeRepository) ReclaimStale(_ context.Context, cutoff time.Time, reason string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// The lock stands in for the conditional write in Mongo: only rows
+	// that are still non-terminal when the sweep runs are touched, so a
+	// verdict can never be overwritten.
+	reclaimed := 0
+	for _, s := range r.items {
+		if s.Status.IsTerminal() || !s.SubmittedAt.Before(cutoff) {
+			continue
+		}
+		s.Status = submission.StatusError
+		s.FailedCase = -1
+		s.CompileError = reason
+		now := time.Now().UTC()
+		s.JudgedAt = &now
+		reclaimed++
+	}
+	return reclaimed, nil
+}
+
+// SetSubmittedAt backdates a submission so tests can age one without
+// waiting. It exists only for tests of time-based behaviour such as the
+// stale-submission sweep.
+func (r *FakeRepository) SetSubmittedAt(id string, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.items[id]; ok {
+		s.SubmittedAt = at
+	}
+}
+
 func (r *FakeRepository) SolvedProblemIDs(_ context.Context, userID string) ([]string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -62,6 +62,22 @@ type Publisher interface {
 	Close() error
 }
 
+// ErrRetryable marks a job failure that another attempt could survive —
+// the database was briefly unreachable, a dependency was restarting.
+//
+// A handler wraps it (errors.Join, or %w) when it failed *before*
+// recording anything on the submission. That distinction decides the
+// acknowledgement: an unmarked failure means the handler already wrote a
+// terminal status, so redelivering would only repeat work guaranteed to
+// fail again, while a marked one means the submission is still sitting
+// non-terminal and dropping the message would strand it — holding the
+// user's single admission-control slot indefinitely.
+//
+// Redelivery is bounded, not unlimited; see dispatch in the rabbitmq
+// subpackage. The stale-submission reaper is the backstop for a job that
+// exhausts its retries.
+var ErrRetryable = errors.New("transient failure")
+
 // Handler processes one job. Returning an error tells the consumer the
 // job failed; the consumer decides whether to redeliver it.
 type Handler func(ctx context.Context, job Job) error
