@@ -43,7 +43,9 @@ const maxRequestBodyBytes = 1 << 20
 //   - no Publisher: submissions are judged inline by the API process
 //   - no Sandbox:   code execution and inline judging are unavailable
 //   - no Bus:       War Room live updates fall back to in-process only
-//   - no Limiter:   rate limits are not enforced
+//   - no Limiter:   rate limits are not enforced (this is the documented
+//     "Redis is optional" mode, and is distinct from a configured
+//     limiter that is failing — see internal/ratelimit)
 type Deps struct {
 	Publisher queue.Publisher
 	Bus       realtime.Bus
@@ -116,11 +118,17 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 		// Keyed by address, not by user: there is no authenticated user
 		// yet, so the per-user limiter would let every attempt through and
 		// password guessing would be unthrottled.
+		//
+		// RateLimitAuthByIP rather than RateLimitByIP: here the limit is
+		// the security control, so a broken counter refuses the request
+		// instead of quietly waving it through. Running with no Redis at
+		// all is still supported and still unthrottled — see the doc
+		// comment on RateLimitAuthByIP.
 		auth.POST("/register",
-			middleware.RateLimitByIP(deps.Limiter, "auth-register", 5, time.Hour),
+			middleware.RateLimitAuthByIP(deps.Limiter, "auth-register", 5, time.Hour),
 			authController.Register)
 		auth.POST("/login",
-			middleware.RateLimitByIP(deps.Limiter, "auth-login", 10, 15*time.Minute),
+			middleware.RateLimitAuthByIP(deps.Limiter, "auth-login", 10, 15*time.Minute),
 			authController.Login)
 		auth.POST("/logout", authController.Logout)
 

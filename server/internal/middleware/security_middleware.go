@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -9,6 +10,12 @@ import (
 
 	"github.com/toji339/online-judge/internal/ratelimit"
 )
+
+// failClosedRetryAfter is how long a client is asked to wait when the
+// rate-limit counter itself is unavailable. Short, because the outage is
+// expected to be brief and the endpoint is one a real user is actively
+// waiting on.
+const failClosedRetryAfter = 15 * time.Second
 
 // SecurityHeaders sets the response headers that cost nothing and close
 // off whole classes of browser-side attack.
@@ -53,14 +60,41 @@ func MaxBodySize(limit int64) gin.HandlerFunc {
 
 // RateLimitByIP throttles by client address rather than by user.
 //
-// The per-user limiter cannot protect login or registration: there is no
-// authenticated user yet, so it lets every request through. Brute-force
-// and mass-signup defence therefore has to key off the caller's address.
+// The per-user limiter cannot protect an anonymous endpoint: there is no
+// authenticated user yet, so it lets every request through. Defence for
+// those endpoints therefore has to key off the caller's address.
 //
-// Unlike the per-user spam limiter, this one fails closed when the
-// counter is unavailable — an unavailable brute-force control is not a
-// reason to allow unlimited password guessing.
+// This variant degrades open: if the counter itself fails, the request
+// is served. That is the right trade for a public read path, where a
+// Redis blip turning into a site-wide 503 would be a worse outage than
+// the traffic the limit was shaping. Use RateLimitAuthByIP instead when
+// losing the limit is the actual risk.
 func RateLimitByIP(limiter ratelimit.Limiter, name string, limit int, window time.Duration) gin.HandlerFunc {
+	return rateLimitByIP(limiter, name, limit, window, false)
+}
+
+// RateLimitAuthByIP is RateLimitByIP that fails closed.
+//
+// It guards login and registration, where the limit *is* the control:
+// silently allowing unlimited password guessing for the duration of a
+// Redis outage hands an attacker exactly the window they need. A 503
+// with Retry-After is the honest answer — we cannot say whether this
+// attempt is the tenth or the ten-thousandth.
+//
+// "Fails closed" applies only to a counter that is configured and
+// erroring. When Redis was never configured at all the API runs with
+// ratelimit.AllowAll, which is not a ratelimit.FallibleLimiter and so
+// never triggers this path — that deployment mode is documented and
+// stays working, unthrottled.
+func RateLimitAuthByIP(limiter ratelimit.Limiter, name string, limit int, window time.Duration) gin.HandlerFunc {
+	return rateLimitByIP(limiter, name, limit, window, true)
+}
+
+func rateLimitByIP(limiter ratelimit.Limiter, name string, limit int, window time.Duration, failClosed bool) gin.HandlerFunc {
+	// Only a limiter that talks to a store can fail; anything else is
+	// either exact or an intentional no-op.
+	fallible, canFail := limiter.(ratelimit.FallibleLimiter)
+
 	return func(c *gin.Context) {
 		// Steps to follow while rate limiting by address
 		// ===============================================
@@ -79,7 +113,29 @@ func RateLimitByIP(limiter ratelimit.Limiter, name string, limit int, window tim
 		key := fmt.Sprintf("%s:%s", name, c.ClientIP())
 
 		// 2. Ask the limiter whether this attempt fits in the window
-		allowed, retryAfter := limiter.Allow(c.Request.Context(), key, limit, window)
+		var (
+			allowed    bool
+			retryAfter time.Duration
+		)
+		if canFail && failClosed {
+			var err error
+			allowed, retryAfter, err = fallible.AllowWithError(c.Request.Context(), key, limit, window)
+			if err != nil {
+				// 2a. The counter is broken. Refuse rather than guess.
+				log.Printf("ratelimit: refusing %s for %s — counter unavailable: %v",
+					name, c.ClientIP(), err)
+				c.Header("Retry-After", fmt.Sprintf("%d", int(failClosedRetryAfter.Seconds())))
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"success": false,
+					"message": "Service temporarily unavailable. Please try again shortly.",
+					"errors":  []string{"Rate limiting is unavailable, so this request cannot be served safely"},
+				})
+				c.Abort()
+				return
+			}
+		} else {
+			allowed, retryAfter = limiter.Allow(c.Request.Context(), key, limit, window)
+		}
 		if allowed {
 			c.Next()
 			return
@@ -91,6 +147,7 @@ func RateLimitByIP(limiter ratelimit.Limiter, name string, limit int, window tim
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"success": false,
 			"message": fmt.Sprintf("Too many attempts. Try again in %d seconds.", seconds),
+			"errors":  []string{fmt.Sprintf("Rate limit exceeded. Try again in %d seconds.", seconds)},
 		})
 		c.Abort()
 	}
