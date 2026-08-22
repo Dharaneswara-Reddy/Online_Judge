@@ -128,14 +128,14 @@ func seedProblems() []seedProblem {
 
 You may assume that each input would have exactly one solution, and you may not use the same element twice.
 
-You can return the answer in any order.
+Print the two indices in increasing order, smaller index first. Judging is an exact match on your output, so the order is part of the answer.
 
 Input Format:
 First line: n (size of array) and target separated by space.
 Second line: n space-separated integers.
 
 Output Format:
-Two space-separated indices (0-indexed).`,
+Two space-separated indices (0-indexed), smaller index first.`,
 				Difficulty:    problem.DifficultyEasy,
 				Tags:          []string{"arrays", "hash-table"},
 				TimeLimitMS:   2000,
@@ -152,7 +152,7 @@ Two space-separated indices (0-indexed).`,
 				{Input: "3 6\n3 2 4", ExpectedOutput: "1 2", IsSample: true},
 				{Input: "2 6\n3 3", ExpectedOutput: "0 1", IsSample: false},
 				{Input: "5 10\n1 2 3 4 6", ExpectedOutput: "3 4", IsSample: false},
-				{Input: "4 8\n1 5 3 7", ExpectedOutput: "0 3", IsSample: false},
+				{Input: "4 8\n1 5 2 7", ExpectedOutput: "0 3", IsSample: false},
 			},
 		},
 
@@ -218,7 +218,7 @@ Print "true" if valid, "false" otherwise.`,
 				{Input: "(]", ExpectedOutput: "false", IsSample: true},
 				{Input: "([)]", ExpectedOutput: "false", IsSample: false},
 				{Input: "{[]}", ExpectedOutput: "true", IsSample: false},
-				{Input: "", ExpectedOutput: "true", IsSample: false},
+				{Input: "]", ExpectedOutput: "false", IsSample: false},
 				{Input: "((((", ExpectedOutput: "false", IsSample: false},
 			},
 		},
@@ -261,12 +261,14 @@ A single integer — the length of the longest common subsequence.`,
 				Title: "Merge Intervals",
 				Statement: `Given an array of intervals where intervals[i] = [start_i, end_i], merge all overlapping intervals, and return an array of the non-overlapping intervals that cover all the intervals in the input.
 
+The input intervals are NOT sorted.
+
 Input Format:
 First line: n (number of intervals).
 Next n lines: two space-separated integers representing start and end of each interval.
 
 Output Format:
-Print merged intervals, one per line, as "start end".`,
+Print the merged intervals sorted by start value, one per line, as "start end".`,
 				Difficulty:    problem.DifficultyMedium,
 				Tags:          []string{"arrays", "sorting"},
 				TimeLimitMS:   2000,
@@ -279,10 +281,10 @@ Print merged intervals, one per line, as "start end".`,
 			},
 			TestCases: []problem.TestCase{
 				{Input: "4\n1 3\n2 6\n8 10\n15 18", ExpectedOutput: "1 6\n8 10\n15 18", IsSample: true},
-				{Input: "2\n1 4\n4 5", ExpectedOutput: "1 5", IsSample: true},
+				{Input: "2\n4 5\n1 4", ExpectedOutput: "1 5", IsSample: true},
 				{Input: "1\n1 1", ExpectedOutput: "1 1", IsSample: false},
-				{Input: "3\n1 10\n2 3\n4 5", ExpectedOutput: "1 10", IsSample: false},
-				{Input: "5\n1 2\n3 4\n5 6\n7 8\n9 10", ExpectedOutput: "1 2\n3 4\n5 6\n7 8\n9 10", IsSample: false},
+				{Input: "3\n4 5\n1 10\n2 3", ExpectedOutput: "1 10", IsSample: false},
+				{Input: "5\n9 10\n1 2\n5 6\n3 4\n7 8", ExpectedOutput: "1 2\n3 4\n5 6\n7 8\n9 10", IsSample: false},
 			},
 		},
 	}
