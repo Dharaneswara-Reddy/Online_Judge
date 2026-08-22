@@ -164,6 +164,55 @@ jobs:
           fi
           echo "No leaked sandbox containers."
 
+  sandbox-arm64:
+    name: Judge sandbox (containment, arm64)
+    # Native arm64, not emulation. Production is moving to a t4g.small
+    # (Graviton2), and the containment tests are timing-sensitive: they
+    # assert compile and run budgets, so they cannot be verified under
+    # QEMU. Measured locally, a cold Go compile inside the sandbox takes
+    # about 76 seconds emulated against a 15 second compileTimeout — a
+    # failure caused entirely by the emulator. These runners are free for
+    # public repositories and execute on real ARM hardware, so the result
+    # here means something.
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Confirm the runner really is arm64
+        run: |
+          arch=$(uname -m)
+          echo "runner architecture: $arch"
+          if [ "$arch" != "aarch64" ]; then
+            echo "expected aarch64 — this job is pointless on anything else"
+            exit 1
+          fi
+
+      - name: Build the judge sandbox image (arm64)
+        run: docker build -t codearena-sandbox:latest docker/judge-sandbox
+
+      - name: Containment tests
+        working-directory: server
+        run: go test ./internal/judge/... -tags integration -count=1 -v
+        timeout-minutes: 25
+
+      - name: No sandbox containers may be left behind
+        if: always()
+        run: |
+          leaked=$(docker ps -aq --filter "label=codearena.sandbox=judge")
+          if [ -n "$leaked" ]; then
+            echo "These sandbox containers outlived the test run:"
+            docker ps -a --filter "label=codearena.sandbox=judge"
+            docker rm -f $leaked
+            exit 1
+          fi
+          echo "No leaked sandbox containers."
+
   scan:
     name: Vulnerability scan
     runs-on: ubuntu-latest
