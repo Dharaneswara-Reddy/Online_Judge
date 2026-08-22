@@ -107,26 +107,41 @@ func (r *MongoRepository) ListRoots(ctx context.Context, problemID string, after
 	return comments, nil
 }
 
-// ListReplies fetches the replies for one page of parents, oldest first.
-func (r *MongoRepository) ListReplies(ctx context.Context, parentIDs []string) ([]discussion.Comment, error) {
-	if len(parentIDs) == 0 {
+// ListReplies fetches the oldest replies of each parent on one page,
+// at most limitPerParent per parent.
+//
+// It issues one bounded query per parent rather than a single $in over
+// all of them. A single query can only carry a limit for the whole call,
+// and a whole-call limit sorted oldest-first is spent entirely on the
+// busiest thread, leaving the other comments on the page with no replies
+// at all. One query per parent keeps the cap fair and each query is an
+// indexed lookup on parent_id, so the cost is a page-sized handful of
+// small reads. The alternative — grouping in an aggregation — builds the
+// whole reply array server-side before slicing it, which moves the
+// unbounded read into the database instead of removing it.
+func (r *MongoRepository) ListReplies(ctx context.Context, parentIDs []string, limitPerParent int) ([]discussion.Comment, error) {
+	if len(parentIDs) == 0 || limitPerParent <= 0 {
 		return []discussion.Comment{}, nil
 	}
 
-	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}).
+		SetLimit(int64(limitPerParent))
 
-	cursor, err := r.comments.Find(ctx, bson.M{"parent_id": bson.M{"$in": parentIDs}}, opts)
-	if err != nil {
-		return nil, fmt.Errorf("list replies: %w", err)
-	}
-	defer cursor.Close(ctx)
+	replies := make([]discussion.Comment, 0, len(parentIDs)*limitPerParent)
+	for _, parentID := range parentIDs {
+		cursor, err := r.comments.Find(ctx, bson.M{"parent_id": parentID}, opts)
+		if err != nil {
+			return nil, fmt.Errorf("list replies: %w", err)
+		}
 
-	var replies []discussion.Comment
-	if err := cursor.All(ctx, &replies); err != nil {
-		return nil, fmt.Errorf("decode replies: %w", err)
-	}
-	if replies == nil {
-		replies = []discussion.Comment{}
+		var batch []discussion.Comment
+		if err := cursor.All(ctx, &batch); err != nil {
+			cursor.Close(ctx)
+			return nil, fmt.Errorf("decode replies: %w", err)
+		}
+		cursor.Close(ctx)
+		replies = append(replies, batch...)
 	}
 	return replies, nil
 }

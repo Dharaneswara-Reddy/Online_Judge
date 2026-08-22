@@ -27,7 +27,11 @@ type Comment struct {
 	CreatedAt time.Time `bson:"created_at" json:"createdAt"`
 
 	// Replies is assembled when a thread is read; it is never stored.
+	// It holds at most MaxRepliesPerComment entries.
 	Replies []Comment `bson:"-" json:"replies,omitempty"`
+	// HasMoreReplies reports that the thread was cut off at the cap, so
+	// the truncation is visible to the client instead of silent.
+	HasMoreReplies bool `bson:"-" json:"hasMoreReplies,omitempty"`
 	// UpvotedByMe is filled in per request for the calling user.
 	UpvotedByMe bool `bson:"-" json:"upvotedByMe"`
 }

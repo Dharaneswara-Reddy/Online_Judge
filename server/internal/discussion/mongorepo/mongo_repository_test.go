@@ -195,6 +195,64 @@ func TestSetUpvote_ConcurrentVotesDoNotDrift(t *testing.T) {
 	}
 }
 
+// TestListReplies_ReadsAtMostTheLimitPerParent is the regression test
+// for the unbounded query: replies were fetched with no SetLimit, so one
+// thread with tens of thousands of replies was read whole into a process
+// with a hard memory cap.
+func TestListReplies_ReadsAtMostTheLimitPerParent(t *testing.T) {
+	repo, _, problemID := testRepo(t)
+
+	busy := newComment(t, repo, problemID, "")
+	quiet := newComment(t, repo, problemID, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const busyReplies = 40
+	for i := 0; i < busyReplies; i++ {
+		reply := newComment(t, repo, problemID, busy.ID)
+		_ = reply
+	}
+	newComment(t, repo, problemID, quiet.ID)
+
+	const limit = 5
+	replies, err := repo.ListReplies(ctx, []string{busy.ID, quiet.ID}, limit)
+	if err != nil {
+		t.Fatalf("list replies: %v", err)
+	}
+
+	perParent := map[string]int{}
+	for _, reply := range replies {
+		perParent[reply.ParentID]++
+	}
+	if got := perParent[busy.ID]; got != limit {
+		t.Errorf("busy thread returned %d replies, want the limit of %d", got, limit)
+	}
+	// The busy thread must not eat the quiet one's share: the limit is per
+	// parent, not per call.
+	if got := perParent[quiet.ID]; got != 1 {
+		t.Errorf("quiet thread returned %d replies, want 1", got)
+	}
+	if len(replies) > limit*2 {
+		t.Errorf("read %d rows, want at most %d", len(replies), limit*2)
+	}
+}
+
+func TestListReplies_NoParentsReadsNothing(t *testing.T) {
+	repo, _, _ := testRepo(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	replies, err := repo.ListReplies(ctx, nil, 10)
+	if err != nil {
+		t.Fatalf("list replies: %v", err)
+	}
+	if len(replies) != 0 {
+		t.Errorf("got %d replies, want none", len(replies))
+	}
+}
+
 // TestSetUpvote_IsIdempotent pins the property the voter set exists for:
 // voting twice the same way must not inflate the count.
 func TestSetUpvote_IsIdempotent(t *testing.T) {
