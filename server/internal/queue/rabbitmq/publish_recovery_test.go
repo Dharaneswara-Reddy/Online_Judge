@@ -130,3 +130,53 @@ func contains(haystack, needle string) bool {
 			return false
 		}()
 }
+
+// TestNextFailureCount_TreatsALongRunAsAFreshIncident covers the retry
+// loop's hot-spin guard.
+//
+// ensureConnection only backs off when the connection is down. A channel
+// that fails on a healthy connection returns instantly, so the consumer
+// loop re-opened and failed at full speed, starving the lane. Consecutive
+// quick failures escalate the delay; a consumer that ran normally for a
+// while before failing starts over, so one blip does not permanently slow
+// recovery.
+func TestNextFailureCount_TreatsALongRunAsAFreshIncident(t *testing.T) {
+	justNow := time.Now()
+	if got := nextFailureCount(4, justNow); got != 5 {
+		t.Errorf("a quick failure after 4 others = %d, want 5 (the delay must escalate)", got)
+	}
+
+	longRun := time.Now().Add(-2 * healthyRunDuration)
+	if got := nextFailureCount(4, longRun); got != 1 {
+		t.Errorf("a failure after a healthy run = %d, want 1 (a blip is not an outage)", got)
+	}
+}
+
+// The escalation has to actually produce a growing, bounded delay,
+// otherwise the counter above is decorative.
+func TestBackoffFor_GrowsAndStaysBounded(t *testing.T) {
+	first := backoffFor(1)
+	later := backoffFor(6)
+
+	if later <= first {
+		t.Errorf("backoff did not grow: attempt 1 = %s, attempt 6 = %s", first, later)
+	}
+	if ceiling := 2 * maxBackoff; later > ceiling {
+		t.Errorf("backoff %s exceeded its ceiling %s — an unbounded delay is its own outage", later, ceiling)
+	}
+}
+
+// sleepBeforeRetry must abandon the wait when the process is shutting
+// down, or a worker would hang for the whole backoff on SIGTERM.
+func TestSleepBeforeRetry_ReturnsImmediatelyOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	if sleepBeforeRetry(ctx, 8) {
+		t.Error("a cancelled context must not report a completed wait")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("waited %s after cancellation — shutdown must not block on backoff", elapsed)
+	}
+}

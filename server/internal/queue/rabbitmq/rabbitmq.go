@@ -455,12 +455,14 @@ func (c *Client) Consume(ctx context.Context, lane queue.Lane, prefetch int, han
 		return fmt.Errorf("unknown lane %q", lane)
 	}
 
+	failures := 0
 	for {
 		conn, err := c.ensureConnection(ctx)
 		if err != nil {
 			return err
 		}
 
+		startedAt := time.Now()
 		err = c.consumeOnce(ctx, conn, lane, prefetch, handler)
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -470,6 +472,44 @@ func (c *Client) Consume(ctx context.Context, lane queue.Lane, prefetch int, han
 		}
 
 		log.Printf("rabbitmq: consumer for lane %q stopped (%v), re-establishing", lane, err)
+		if failures = nextFailureCount(failures, startedAt); !sleepBeforeRetry(ctx, failures) {
+			return ctx.Err()
+		}
+	}
+}
+
+// healthyRunDuration is how long a consumer must have run before its
+// failure counts as a fresh incident rather than a continuing one.
+const healthyRunDuration = 30 * time.Second
+
+// nextFailureCount decides whether a failure continues a run of them.
+//
+// ensureConnection only backs off when the *connection* is down. A channel
+// that fails on a healthy connection returns immediately, so the retry
+// loop used to spin at full speed: re-open, fail, re-open, starving the
+// lane and filling the log. Counting consecutive quick failures is what
+// turns that into a bounded retry.
+//
+// A consumer that ran for a while before failing is treated as a new
+// incident, so an occasional channel blip does not permanently slow
+// recovery.
+func nextFailureCount(current int, startedAt time.Time) int {
+	if time.Since(startedAt) >= healthyRunDuration {
+		return 1
+	}
+	return current + 1
+}
+
+// sleepBeforeRetry waits out the backoff, reporting false if the context
+// ended while waiting.
+func sleepBeforeRetry(ctx context.Context, failures int) bool {
+	delay := backoffFor(failures)
+	log.Printf("rabbitmq: retrying in %s", delay.Round(time.Millisecond))
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(delay):
+		return true
 	}
 }
 

@@ -130,12 +130,14 @@ func (c *Client) Call(ctx context.Context, payload []byte) ([]byte, error) {
 // re-establishing itself after a connection failure exactly as the lane
 // consumers do.
 func (c *Client) Respond(ctx context.Context, concurrency int, handler queue.RPCHandler) error {
+	failures := 0
 	for {
 		conn, err := c.ensureConnection(ctx)
 		if err != nil {
 			return err
 		}
 
+		startedAt := time.Now()
 		err = c.respondOnce(ctx, conn, concurrency, handler)
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -145,6 +147,12 @@ func (c *Client) Respond(ctx context.Context, concurrency int, handler queue.RPC
 		}
 
 		log.Printf("rabbitmq: playground responder stopped (%v), re-establishing", err)
+		// Same bounded backoff as the lane consumers: a channel failing on
+		// a live connection returns instantly, so without this the loop
+		// spins.
+		if failures = nextFailureCount(failures, startedAt); !sleepBeforeRetry(ctx, failures) {
+			return ctx.Err()
+		}
 	}
 }
 
