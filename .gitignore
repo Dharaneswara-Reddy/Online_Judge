@@ -61,3 +61,6 @@ GEMINI.md
 deploy/.env
 deploy/*.pem
 *.pem
+
+# graphify knowledge-graph output (local context, not project source)
+graphify-out/
