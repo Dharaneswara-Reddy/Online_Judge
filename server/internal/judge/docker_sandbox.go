@@ -256,7 +256,14 @@ func (s *dockerSubmission) exec(ctx context.Context, cmd []string, stdin string)
 func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin string) (ExecuteResult, error) {
 	execResp, err := s.cli.ContainerExecCreate(ctx, s.containerID, types.ExecConfig{
 		Cmd: cmd,
-		Env: []string{"GOCACHE=/tmp/gocache", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin"},
+		// GOCACHE points at the cache baked into the image, not at a fresh
+		// empty directory. See docker/judge-sandbox/Dockerfile: a cold
+		// compile costs about 12 seconds under the judge's own limits, and
+		// a warm one about 0.9, so this is the difference between Go
+		// submissions having a 3 second margin against the compile timeout
+		// and having a comfortable one. The directory is read-only, which
+		// is the point — one submission cannot poison another's build.
+		Env: []string{"GOCACHE=/opt/gocache", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin"},
 		// stdin is attached unconditionally, even when there is nothing to
 		// send. Attaching only for non-empty input made a test case with
 		// empty input a different shape of execution from every other one:
