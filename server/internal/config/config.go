@@ -26,7 +26,23 @@ type Config struct {
 	ClientURL   string // Frontend origin for CORS (e.g. http://localhost:5173)
 	RabbitMQURL string // AMQP URL for the submission queue
 	RedisURL    string // Redis URL for caching, rate limits and pub/sub
-	WorkerCount int    // Concurrent judge slots per worker process
+	WorkerCount int    // Queue prefetch: deliveries a worker takes at once
+
+	// MaxSandboxes caps how many judge containers may exist on the host
+	// at the same time, across every consumer in the process.
+	//
+	// It is deliberately a separate setting from WorkerCount. A worker
+	// runs three independent consumers — the standard lane, the War Room
+	// lane and the playground responder — and each used to size itself
+	// from WorkerCount alone, so the real container ceiling was three
+	// times the number anyone configured. A container may claim a full
+	// vCPU and up to 512MB; on the 916MB production host that arithmetic
+	// ended at the OOM killer, twice.
+	//
+	// Prefetch and container count answer different questions, so they
+	// get different knobs. The default is one because the memory budget
+	// in deploy/docker-compose.prod.yml has room for exactly one.
+	MaxSandboxes int
 
 	// SecureCookies marks the session cookie Secure, so the browser only
 	// ever sends it over HTTPS. It defaults to true: the insecure setting
@@ -63,9 +79,10 @@ func Load() *Config {
 		// Queue and cache default to the local docker-compose services.
 		// They are not required: the API degrades to synchronous judging
 		// and an uncached read path when they are unreachable.
-		RabbitMQURL: rabbitMQURL(),
-		RedisURL:    getEnvOrDefault("REDIS_URL", "redis://localhost:6379/0"),
-		WorkerCount: getEnvAsIntOrDefault("WORKER_COUNT", 4),
+		RabbitMQURL:  rabbitMQURL(),
+		RedisURL:     getEnvOrDefault("REDIS_URL", "redis://localhost:6379/0"),
+		WorkerCount:  getEnvAsIntOrDefault("WORKER_COUNT", 4),
+		MaxSandboxes: getEnvAsIntOrDefault("MAX_SANDBOXES", 1),
 
 		// Default from the frontend's scheme rather than a flat true: a
 		// Secure cookie is dropped by the browser over plain HTTP, which

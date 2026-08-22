@@ -56,11 +56,34 @@ func main() {
 	defer broker.Close()
 
 	// 3. Create the Docker sandbox that actually runs user code
-	sandbox, err := judge.NewDockerSandbox()
+	docker, err := judge.NewDockerSandbox()
 	if err != nil {
 		log.Fatalf("FATAL: Docker sandbox unavailable: %v\n"+
 			"Build the image with: docker build -t codearena-sandbox:latest docker/judge-sandbox", err)
 	}
+
+	// Reclaim whatever a previous worker left behind before taking any
+	// new work. A judge container runs `sleep infinity`, so removing it
+	// is the only thing that ever stops it: a worker killed mid-judge
+	// leaks a container that holds its CPU and memory reservation for as
+	// long as the host lives, and they accumulate across every crash.
+	//
+	// A failure here is worth reporting but not worth refusing to start
+	// over — a worker that judges nothing is worse than one running
+	// alongside a leaked container.
+	if removed, err := docker.ReconcileOrphans(context.Background()); err != nil {
+		log.Printf("WARNING: could not reclaim orphaned sandbox containers: %v", err)
+	} else if removed > 0 {
+		log.Printf("Reclaimed %d orphaned sandbox container(s) left by a previous run", removed)
+	}
+
+	// Every consumer below shares one ceiling on live containers. The
+	// wrapper goes here, around the sandbox itself, rather than around
+	// each consumer: three consumers each sized from WorkerCount is
+	// exactly how the configured number quietly became three times as
+	// many containers, and a fourth consumer added later would have
+	// repeated it.
+	sandbox := judge.NewLimitedSandbox(docker, cfg.MaxSandboxes)
 
 	// 4. Wire the judging pipeline
 	problemSvc := problem.NewService(problemmongo.New(db))
@@ -112,7 +135,8 @@ func main() {
 		}
 	}()
 
-	log.Printf("Judge worker started with %d concurrent slots per lane", cfg.WorkerCount)
+	log.Printf("Judge worker started: prefetch %d per lane, at most %d judge container(s) on this host at once",
+		cfg.WorkerCount, sandbox.Capacity())
 
 	// Wait for a signal, then let each lane drain. Consume stops taking
 	// new deliveries as soon as the context is cancelled and waits for

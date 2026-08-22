@@ -44,10 +44,10 @@
 # this stack, not members of it, and compose cannot cap them. Each one
 # asks for 1 vCPU and up to `MemoryLimitMB` (256 MB by default, 512 MB
 # for the largest playground request). The 256 MB line above therefore
-# only holds while at most ONE sandbox runs at a time; the worker-side
-# concurrency cap that enforces that is owned by the worker package, not
-# by this file. Raising WORKER_COUNT above that cap re-opens the exact
-# out-of-memory failure this budget exists to prevent.
+# only holds while at most ONE sandbox runs at a time, which is what
+# MAX_SANDBOXES on the worker service enforces — it is a hard semaphore
+# around container creation, shared by all three consumers in the
+# process, so no lane count or prefetch setting can exceed it.
 #
 # CPU: `cpus` is a ceiling, not a reservation, so the shares below sum to
 # 1.70 of the 2 available on purpose — an idle stack should not be
@@ -142,10 +142,15 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       REDIS_URL: redis://redis:6379/0
-      # One t3.micro core; more slots would only cause contention, and
-      # every extra slot is another uncapped sandbox against the budget
-      # at the top of this file.
+      # Queue prefetch: how many deliveries each lane takes at once.
+      # This is NOT the container count — see MAX_SANDBOXES below.
       WORKER_COUNT: ${WORKER_COUNT:-2}
+      # The ceiling the memory budget at the top of this file is built
+      # on. One sandbox at 256 MB is what the 916 MB host has room for
+      # once the services above are accounted for. Raising this without
+      # redoing that arithmetic re-opens the out-of-memory failure that
+      # took the site down twice.
+      MAX_SANDBOXES: ${MAX_SANDBOXES:-1}
     mem_limit: 96m
     memswap_limit: 96m
     cpus: 0.40
