@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -23,16 +24,53 @@ import (
 // point is behaviour the code cannot demonstrate on its own: a broker
 // that goes away and comes back.
 //
-// They are skipped when no broker is reachable, so `go test ./...` stays
-// green on a machine without Docker. Start one with:
+// On a developer machine with no Docker they skip, so `go test ./...`
+// stays usable. Start one with:
 //
 //	docker compose up -d
+//
+// Anywhere the broker is EXPECTED — CI, or any run that sets
+// RABBITMQ_REQUIRED — a missing or unrestartable broker is a failure, not
+// a skip. A silent skip is indistinguishable from a pass in a CI log, and
+// these seven tests skipped their way through every run for months.
 //
 // Each test gets its own namespaced queues, so a judge worker running
 // against the same broker consumes the real lane queues and never sees
 // this traffic. That keeps the suite deterministic whatever else is
 // running locally.
-const brokerURL = "amqp://guest:guest@localhost:5672/"
+//
+// Environment overrides:
+//
+//	RABBITMQ_TEST_URL   AMQP URL to test against (default: local guest)
+//	RABBITMQ_CONTAINER  container name/ID to restart (default: discovered)
+//	RABBITMQ_REQUIRED   any non-empty value: never skip, always fail
+var brokerURL = envOr("RABBITMQ_TEST_URL", "amqp://guest:guest@localhost:5672/")
+
+// envOr returns the environment value for key, or def when it is unset or
+// empty.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// brokerRequired reports whether a missing broker must fail rather than
+// skip. CI counts on its own: GitHub Actions always sets CI=true, so
+// forgetting RABBITMQ_REQUIRED cannot quietly re-enable skipping there.
+func brokerRequired() bool {
+	return os.Getenv("RABBITMQ_REQUIRED") != "" || os.Getenv("CI") != ""
+}
+
+// skipOrFail skips when a broker is merely optional and fails when one was
+// expected, so the two cases can never look alike in a test report.
+func skipOrFail(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if brokerRequired() {
+		t.Fatalf("a RabbitMQ broker is required in this environment but "+format, args...)
+	}
+	t.Skipf("no RabbitMQ available (start it with: docker compose up -d): "+format, args...)
+}
 
 // isolatedClient returns a client whose queues belong to this test alone,
 // and registers cleanup that removes them from the broker afterwards.
@@ -83,23 +121,68 @@ func testNamespace(t *testing.T) string {
 	return ns
 }
 
-// requireBroker skips the test unless a broker is actually reachable.
+// requireBroker ensures a broker is actually reachable. It skips only
+// where a broker is optional; where one is expected it fails.
 func requireBroker(t *testing.T) {
 	t.Helper()
 	client, err := rabbitmq.Connect(brokerURL)
 	if err != nil {
-		t.Skipf("no RabbitMQ at %s (start it with: docker compose up -d)", "localhost:5672")
+		// The URL can carry credentials, so report the error only.
+		skipOrFail(t, "could not connect: %v", err)
+		return
 	}
 	_ = client.Close()
 }
 
-// restartBroker restarts the Compose RabbitMQ container and waits for it
-// to accept connections again.
+// brokerContainer finds the container to restart. Hardcoding a name meant
+// this only ever worked against the local compose stack; on a hosted
+// runner the broker is a service container with a generated name, so the
+// name is discovered from the published AMQP port instead.
+//
+// Order: an explicit RABBITMQ_CONTAINER, then whatever publishes 5672,
+// then the local compose container name.
+func brokerContainer(t *testing.T) string {
+	t.Helper()
+
+	if name := os.Getenv("RABBITMQ_CONTAINER"); name != "" {
+		return name
+	}
+
+	// `docker ps --filter publish=5672` matches both a hosted runner's
+	// service container and any locally published broker.
+	out, err := exec.Command("docker", "ps", "--filter", "publish=5672",
+		"--format", "{{.ID}}").Output()
+	if err == nil {
+		if id := strings.TrimSpace(string(out)); id != "" {
+			// One ID per line; the first is enough.
+			return strings.Fields(id)[0]
+		}
+	}
+
+	// Fall back to the name docker-compose.yml gives the dev broker.
+	if err := exec.Command("docker", "inspect", "oj-rabbitmq").Run(); err == nil {
+		return "oj-rabbitmq"
+	}
+
+	skipOrFail(t, "no RabbitMQ container could be found to restart "+
+		"(set RABBITMQ_CONTAINER to name one)")
+	return ""
+}
+
+// restartBroker restarts the RabbitMQ container and waits for it to accept
+// connections again.
 func restartBroker(t *testing.T) {
 	t.Helper()
-	cmd := exec.Command("docker", "restart", "oj-rabbitmq")
+
+	container := brokerContainer(t)
+	if container == "" {
+		return // skipOrFail already stopped the test
+	}
+
+	cmd := exec.Command("docker", "restart", container)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("could not restart the broker container: %v (%s)", err, out)
+		skipOrFail(t, "could not restart the broker container: %v (%s)", err, out)
+		return
 	}
 
 	// The container is up before AMQP is ready, so wait for a real dial.
