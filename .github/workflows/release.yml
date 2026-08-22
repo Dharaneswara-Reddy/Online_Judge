@@ -10,6 +10,9 @@
 # Publishing an image changes nothing on the server by itself. Rolling it
 # out is a separate, deliberate step: see deploy/README.md.
 #
+# Three images are published: the server (API + worker), the client, and
+# the judge sandbox that untrusted submissions execute inside.
+#
 # ---------------------------------------------------------------------
 # Why workflow_run, and not a job inside ci.yml
 # ---------------------------------------------------------------------
@@ -101,6 +104,15 @@ jobs:
             context: server
           - name: client
             context: client
+          # The judge sandbox. It used to be built by hand on the host and
+          # existed in no registry, so a `docker system prune` — the
+          # obvious response to a full disk — deleted it and every
+          # submission failed afterwards, with no way back that did not
+          # involve apt-installing a JDK and build-essential on a 916 MB
+          # instance. It is a production artefact like the other two and is
+          # now published like them.
+          - name: sandbox
+            context: docker/judge-sandbox
 
     steps:
       # workflow_run does NOT check out the commit that was tested. Both
