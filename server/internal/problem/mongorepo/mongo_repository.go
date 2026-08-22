@@ -195,6 +195,16 @@ func (r *MongoRepository) AddTestCase(ctx context.Context, tc *problem.TestCase)
 	return nil
 }
 
+// DeleteTestCases removes every test case for one problem and returns how
+// many were removed.
+func (r *MongoRepository) DeleteTestCases(ctx context.Context, problemID string) (int, error) {
+	result, err := r.testCases.DeleteMany(ctx, bson.M{"problem_id": problemID})
+	if err != nil {
+		return 0, fmt.Errorf("delete test cases: %w", err)
+	}
+	return int(result.DeletedCount), nil
+}
+
 func (r *MongoRepository) ListTestCases(ctx context.Context, problemID string, sampleOnly bool) ([]problem.TestCase, error) {
 	query := bson.M{"problem_id": problemID}
 	if sampleOnly {

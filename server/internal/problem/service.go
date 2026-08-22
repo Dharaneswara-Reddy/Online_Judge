@@ -174,6 +174,57 @@ func (s *Service) AddTestCase(ctx context.Context, tc *TestCase) error {
 	return s.repo.AddTestCase(ctx, tc)
 }
 
+// ReplaceTestCases swaps a problem's entire test case set for a new one.
+//
+// It is the only way to correct stored test data — a wrong expected
+// output otherwise survives forever, since the seeder skips problems
+// that already have cases. It is destructive by nature, so callers must
+// ask for it explicitly; nothing invokes it implicitly.
+//
+// The whole replacement is validated before anything is deleted, and an
+// empty set is refused: a problem with no test cases accepts every
+// submission.
+func (s *Service) ReplaceTestCases(ctx context.Context, problemID string, tcs []TestCase) error {
+	// Steps to follow while replacing a problem's test cases
+	// ========================================================
+
+	// 1. Refuse to leave the problem with nothing to judge against
+	if problemID == "" {
+		return ValidationError{Field: "problemId", Message: "is required"}
+	}
+	if len(tcs) == 0 {
+		return ValidationError{Field: "testCases", Message: "must not be empty"}
+	}
+
+	// 2. Validate every replacement first, so a typo in the new set never
+	//    destroys the old one
+	for i := range tcs {
+		if strings.TrimSpace(tcs[i].ExpectedOutput) == "" {
+			return ValidationError{
+				Field:   fmt.Sprintf("testCases[%d].expectedOutput", i),
+				Message: "must not be empty",
+			}
+		}
+	}
+
+	// 3. Drop the old set
+	if _, err := s.repo.DeleteTestCases(ctx, problemID); err != nil {
+		return err
+	}
+
+	// 4. Insert the new one, each case bound to this problem whatever the
+	//    caller filled in
+	for i := range tcs {
+		tc := tcs[i]
+		tc.ID = ""
+		tc.ProblemID = problemID
+		if err := s.repo.AddTestCase(ctx, &tc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ListPublicTestCases returns ONLY sample test cases. This is the sole
 // entry point the public-facing problem detail handler may call — never
 // call repo.ListTestCases(..., false) from a public/unauthenticated path.

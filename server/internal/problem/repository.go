@@ -19,6 +19,10 @@ type Repository interface {
 
 	AddTestCase(ctx context.Context, tc *TestCase) error
 	ListTestCases(ctx context.Context, problemID string, sampleOnly bool) ([]TestCase, error)
+	// DeleteTestCases removes every test case belonging to one problem and
+	// reports how many went. It exists so a wrong expected output can be
+	// corrected: without it, seeded data is write-once.
+	DeleteTestCases(ctx context.Context, problemID string) (int, error)
 }
 
 // ListFilter narrows a problem listing. Zero values mean "no filter";
