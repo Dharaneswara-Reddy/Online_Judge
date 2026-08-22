@@ -1,14 +1,53 @@
 // Package tests contains all test files for the Online Judge backend.
 // Tests follow the TDD approach — they are written BEFORE the
 // implementation code. Each test file targets a specific layer
-// (model, controller) and uses a dedicated test database on
-// MongoDB Atlas that is cleaned between test runs.
+// (model, controller).
+//
+// # Which database these tests use
+//
+// A throwaway database on a LOCAL MongoDB, created fresh for each run and
+// dropped afterwards. Two rules make that structural rather than a
+// convention, because both were broken before and both cost real data:
+//
+//  1. The suite never loads ../.env. That file holds the production Atlas
+//     credential, and the only thing that used to separate a test run from
+//     live data was the literal string "online_judge_test" happening to
+//     differ from DB_NAME. Test configuration comes from the environment
+//     or from ../.env.test, which is a different file on purpose.
+//
+//  2. The resolved URI must point at a local or containerised MongoDB.
+//     Anything else — in particular any mongodb+srv:// Atlas cluster —
+//     aborts the run before a single connection is opened. Overriding it
+//     takes a deliberate CODEARENA_ALLOW_REMOTE_TEST_MONGO=1.
+//
+// The database name carries a random suffix, so two runs on the same host
+// (a developer and a watch process, two CI jobs) cannot collide. They used
+// to: one run's unconditional Drop landed in the middle of another, the
+// second run then wrote into an index-less collection, and every later run
+// died at EnsureIndexes with a duplicate-key error.
+//
+// This is a deliberate exception to constitution §10 ("MongoDB Atlas —
+// no local MongoDB"). §10 governs how the application is deployed and
+// developed; a test suite that can reach production credentials is a
+// different kind of risk, and CI has no business holding an Atlas
+// password at all.
+//
+// Configuration:
+//
+//	TEST_MONGO_URI                       preferred; a local MongoDB URI
+//	MONGO_URI                            used only if TEST_MONGO_URI is unset
+//	../.env.test                         dotenv fallback for the two above
+//	CODEARENA_ALLOW_REMOTE_TEST_MONGO=1  opt out of the locality check
 package tests
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"log"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,48 +68,218 @@ import (
 var testDB *mongo.Database
 var testClient *mongo.Client
 
-// TestMain is the entry point for all tests in this package.
-// It connects to MongoDB Atlas using the MONGO_URI from .env,
-// sets up a dedicated test database, and cleans up afterward.
+// testDBPrefix marks every database this suite is allowed to create or
+// destroy. Nothing without this prefix is ever dropped.
+const testDBPrefix = "online_judge_test_"
+
+// localMongoHosts are the only hosts a test run may target without an
+// explicit override: loopback, and the service names a MongoDB container
+// gets under Docker Compose or a GitHub Actions service container.
+var localMongoHosts = map[string]bool{
+	"localhost":  true,
+	"127.0.0.1":  true,
+	"::1":        true,
+	"0.0.0.0":    true,
+	"mongo":      true,
+	"mongodb":    true,
+	"mongo-test": true,
+}
+
+// TestMain is the entry point for all tests in this package. It resolves a
+// test-only MongoDB, refuses to continue if that database could be a
+// production one, creates a run-scoped database, and drops it afterwards.
 func TestMain(m *testing.M) {
+	os.Exit(runTests(m))
+}
+
+// runTests holds the body of TestMain so that cleanup can run through
+// defer. TestMain itself cannot: os.Exit skips deferred calls, which is
+// how a failed run used to leave its database behind.
+func runTests(m *testing.M) int {
 	// Steps to set up the test environment
 	// ======================================
 
-	// 1. Load .env from the server directory
-	if err := godotenv.Load("../.env"); err != nil {
-		log.Println("Warning: Could not load .env file for tests, using system env vars")
+	// 1. Resolve the URI — environment first, then ../.env.test.
+	//    ../.env is deliberately NOT consulted: it is the production
+	//    credential, and this suite must not be able to reach it.
+	uri := resolveTestMongoURI()
+
+	// 2. Refuse to run against anything that is not clearly a local or
+	//    containerised MongoDB. Fails loudly and prints no credential.
+	if err := assertLocalMongo(uri); err != nil {
+		log.Printf("FATAL: refusing to run the test suite: %v", err)
+		log.Printf("Point TEST_MONGO_URI at a local MongoDB (for example " +
+			"mongodb://localhost:27017), or start one with `docker run --rm -p 27017:27017 mongo:7`.")
+		log.Printf("If you really mean to test against a remote cluster, set " +
+			"CODEARENA_ALLOW_REMOTE_TEST_MONGO=1 and accept that it is not production.")
+		return 1
 	}
 
-	// 2. Connect to MongoDB Atlas
-	uri := os.Getenv("MONGO_URI")
-	if uri == "" {
-		log.Fatal("FATAL: MONGO_URI is not set — cannot run tests without a database")
-	}
-
+	// 3. Connect.
 	var err error
 	testClient, err = database.Connect(uri)
 	if err != nil {
-		log.Fatalf("FATAL: Could not connect to MongoDB for tests: %v", err)
+		// The error can embed the URI, so report only its type.
+		log.Printf("FATAL: could not connect to the test MongoDB (%T)", err)
+		return 1
 	}
+	defer database.Disconnect(testClient)
 
-	// 3. Use a separate test database so we never touch production data
-	testDB = testClient.Database("online_judge_test")
+	// 4. Use a database unique to this run, so two runs on one host cannot
+	//    drop each other's collections halfway through.
+	dbName, err := uniqueTestDBName()
+	if err != nil {
+		log.Printf("FATAL: could not generate a test database name: %v", err)
+		return 1
+	}
+	if prod := os.Getenv("DB_NAME"); prod != "" && dbName == prod {
+		log.Printf("FATAL: the generated test database collides with DB_NAME")
+		return 1
+	}
+	testDB = testClient.Database(dbName)
 
-	// 4. Ensure indexes exist on the test database
+	// 5. Always drop this run's database, pass or fail. The prefix check is
+	//    a belt-and-braces guard on the one destructive call in the suite.
+	defer func() {
+		if !strings.HasPrefix(testDB.Name(), testDBPrefix) {
+			log.Printf("REFUSING to drop %q: not a test database", testDB.Name())
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := testDB.Drop(ctx); err != nil {
+			log.Printf("warning: could not drop the test database: %v", err)
+		}
+	}()
+
+	// 6. Ensure indexes exist on the fresh test database.
 	if err := database.EnsureIndexes(testDB); err != nil {
-		log.Fatalf("FATAL: Could not create indexes on test database: %v", err)
+		log.Printf("FATAL: could not create indexes on the test database: %v", err)
+		return 1
 	}
 
-	// 5. Run all the tests
-	code := m.Run()
+	// 7. Run all the tests.
+	return m.Run()
+}
 
-	// 6. Clean up — drop the test database and disconnect
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = testDB.Drop(ctx)
-	database.Disconnect(testClient)
+// resolveTestMongoURI returns the URI to test against, preferring an
+// explicitly test-scoped variable and falling back to ../.env.test.
+func resolveTestMongoURI() string {
+	if uri := os.Getenv("TEST_MONGO_URI"); uri != "" {
+		return uri
+	}
+	if uri := os.Getenv("MONGO_URI"); uri != "" {
+		return uri
+	}
+	// godotenv.Load never overrides variables already set, so this only
+	// fills the gap left above.
+	if err := godotenv.Load("../.env.test"); err != nil {
+		log.Println("note: no ../.env.test file; relying on the environment")
+	}
+	if uri := os.Getenv("TEST_MONGO_URI"); uri != "" {
+		return uri
+	}
+	return os.Getenv("MONGO_URI")
+}
 
-	os.Exit(code)
+// uniqueTestDBName builds a database name scoped to this run.
+func uniqueTestDBName() (string, error) {
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	// 18 + 12 characters, comfortably inside MongoDB's 63-byte limit.
+	return testDBPrefix + hex.EncodeToString(buf), nil
+}
+
+// assertLocalMongo returns an error unless the URI clearly points at a
+// local or containerised MongoDB. It never includes the URI, any host or
+// any credential in what it returns — a failure message is a thing people
+// paste into issues.
+func assertLocalMongo(uri string) error {
+	if uri == "" {
+		return fmt.Errorf("no test MongoDB URI is configured " +
+			"(set TEST_MONGO_URI, or create server/.env.test)")
+	}
+
+	if os.Getenv("CODEARENA_ALLOW_REMOTE_TEST_MONGO") != "" {
+		log.Println("warning: CODEARENA_ALLOW_REMOTE_TEST_MONGO is set — " +
+			"the locality check on the test database is disabled")
+		return nil
+	}
+
+	scheme, authority, err := splitMongoURI(uri)
+	if err != nil {
+		return err
+	}
+	if scheme == "mongodb+srv" {
+		// mongodb+srv is the Atlas connection form. Nothing that resolves
+		// through SRV is a local test instance.
+		return fmt.Errorf("the URI uses mongodb+srv://, which is a hosted " +
+			"cluster and never a test instance")
+	}
+	if scheme != "mongodb" {
+		return fmt.Errorf("unrecognised MongoDB URI scheme")
+	}
+
+	hosts := mongoHosts(authority)
+	if len(hosts) == 0 {
+		return fmt.Errorf("the URI names no host")
+	}
+	for _, h := range hosts {
+		if !localMongoHosts[h] {
+			// Deliberately does not echo the host.
+			return fmt.Errorf("the URI points at a host that is not a known " +
+				"local or containerised MongoDB")
+		}
+	}
+	return nil
+}
+
+// splitMongoURI pulls the scheme and the host section out of a MongoDB
+// URI without net/url, which rejects the comma-separated host lists a
+// replica-set URI is allowed to use.
+func splitMongoURI(uri string) (scheme, authority string, err error) {
+	i := strings.Index(uri, "://")
+	if i < 0 {
+		return "", "", fmt.Errorf("the URI has no scheme")
+	}
+	scheme = strings.ToLower(uri[:i])
+	rest := uri[i+3:]
+
+	// Trim the path and query, leaving [userinfo@]host[,host...].
+	if j := strings.IndexAny(rest, "/?"); j >= 0 {
+		rest = rest[:j]
+	}
+	// A password may itself contain an escaped '@', so take the last one.
+	if at := strings.LastIndex(rest, "@"); at >= 0 {
+		rest = rest[at+1:]
+	}
+	return scheme, rest, nil
+}
+
+// mongoHosts splits a host section into lowercased hostnames, dropping
+// ports and IPv6 brackets.
+func mongoHosts(authority string) []string {
+	var hosts []string
+	for _, hp := range strings.Split(authority, ",") {
+		hp = strings.TrimSpace(hp)
+		if hp == "" {
+			continue
+		}
+		if strings.HasPrefix(hp, "[") {
+			// [::1]:27017 — the bracketed literal is the host.
+			if end := strings.Index(hp, "]"); end > 0 {
+				hosts = append(hosts, strings.ToLower(hp[1:end]))
+				continue
+			}
+		}
+		if colon := strings.LastIndex(hp, ":"); colon >= 0 {
+			hp = hp[:colon]
+		}
+		hosts = append(hosts, strings.ToLower(hp))
+	}
+	return hosts
 }
 
 // cleanUsersCollection drops all documents from the users

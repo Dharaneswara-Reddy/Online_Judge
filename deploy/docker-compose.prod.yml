@@ -1,14 +1,14 @@
 # CodeArena production stack — one EC2 host, no managed AWS services.
 #
-# Preferred rollout pulls images built by CI, because building here
-# exhausts a 916 MB host:
+# Rollout is always a pull and a restart:
 #
 #   docker compose -f deploy/docker-compose.prod.yml pull
 #   docker compose -f deploy/docker-compose.prod.yml up -d --no-build
 #
-# Building on the host still works but is a fallback:
-#
-#   docker compose -f deploy/docker-compose.prod.yml up -d --build
+# There is deliberately no `build:` stanza in this file. Building here
+# exhausts the 916 MB host — it has taken the site down twice, once badly
+# enough that sshd could no longer fork. Images are built by GitHub
+# Actions and published to GHCR; see deploy/README.md.
 #
 # Secrets come from deploy/.env on the host, which is git-ignored and
 # never committed. MongoDB stays on Atlas.
@@ -16,28 +16,79 @@
 # Only the frontend publishes a port. RabbitMQ, Redis and the API are
 # reachable only on the internal compose network, so nothing but 80 is
 # exposed to the internet.
+#
+# ---------------------------------------------------------------------
+# Memory budget — t3.micro, 2 vCPU, 916 MB, no swap
+# ---------------------------------------------------------------------
+# Every service below carries a hard `mem_limit`, and `memswap_limit` is
+# set equal to it so a container can never push the host into swap it
+# does not have. The arithmetic has to visibly close:
+#
+#     916 MB   total physical RAM
+#   - 200 MB   host: kernel, systemd, sshd, dockerd, SSM agent
+#   - 256 MB   ONE judge sandbox container (see the caveat below)
+#   ---------
+#   = 460 MB   available to the compose services
+#
+#     160 MB   rabbitmq   (Erlang VM; watermark set below so it throttles
+#                          itself before the cgroup OOM-killer fires)
+#     112 MB   api
+#      96 MB   worker
+#      48 MB   redis      (maxmemory 32mb, so redis evicts before it OOMs)
+#      32 MB   frontend   (nginx serving static files)
+#   ---------
+#     448 MB   committed, leaving 12 MB of slack inside the 460 MB.
+#
+# CAVEAT — judge sandboxes are NOT accounted for here. The worker creates
+# them directly through the host Docker daemon, so they are siblings of
+# this stack, not members of it, and compose cannot cap them. Each one
+# asks for 1 vCPU and up to `MemoryLimitMB` (256 MB by default, 512 MB
+# for the largest playground request). The 256 MB line above therefore
+# only holds while at most ONE sandbox runs at a time; the worker-side
+# concurrency cap that enforces that is owned by the worker package, not
+# by this file. Raising WORKER_COUNT above that cap re-opens the exact
+# out-of-memory failure this budget exists to prevent.
+#
+# CPU: `cpus` is a ceiling, not a reservation, so the shares below sum to
+# 1.70 of the 2 available on purpose — an idle stack should not be
+# throttled just because a sandbox might want its 1.0 at the same moment.
+
+x-logging: &default-logging
+  # Unbounded json-file logs fill the 8 GB root volume. A full disk trips
+  # RabbitMQ's disk-free alarm, which blocks every publisher, and recovery
+  # needs an SSH session, which also needs disk. Worst case here is
+  # 5 services x 30 MB = 150 MB.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   frontend:
-    # Built by CI and pulled from the registry. `build` stays as a
-    # fallback for a host that has to build for itself.
+    # Built by CI and pulled from the registry. Never built on the host.
     image: ${CLIENT_IMAGE:-ghcr.io/dharaneswara-reddy/codearena-client:latest}
-    build:
-      context: ../client
-      args:
-        # Same-origin: nginx proxies /api to the API container, so the
-        # bundle never needs a cross-origin host baked in.
-        VITE_API_URL: /api
     restart: unless-stopped
     ports:
       - "80:80"
+    mem_limit: 32m
+    memswap_limit: 32m
+    cpus: 0.20
+    stop_grace_period: 20s
+    logging: *default-logging
+    # nginx keeps its worker process alive while wedged, so `restart:
+    # unless-stopped` alone never notices. Serving the SPA shell is the
+    # honest proxy for "this container is still useful".
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     depends_on:
       - api
 
   api:
     image: ${SERVER_IMAGE:-ghcr.io/dharaneswara-reddy/codearena-server:latest}
-    build:
-      context: ../server
     restart: unless-stopped
     environment:
       MONGO_URI: ${MONGO_URI}
@@ -52,6 +103,21 @@ services:
       SECURE_COOKIES: "false"
     expose:
       - "8080"
+    mem_limit: 112m
+    memswap_limit: 112m
+    cpus: 0.60
+    stop_grace_period: 30s
+    logging: *default-logging
+    # There is no dedicated health endpoint yet, so this hits the cheapest
+    # public read path. It is a real end-to-end probe — routing, handler
+    # and the Atlas connection all have to work for it to return 200 — but
+    # it is a stand-in: replace it with GET /api/healthz once that exists.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/api/problems || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -61,8 +127,6 @@ services:
   worker:
     # Same image as the API — one binary set, different entrypoint.
     image: ${SERVER_IMAGE:-ghcr.io/dharaneswara-reddy/codearena-server:latest}
-    build:
-      context: ../server
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/worker"]
     # The worker launches judge sandboxes through the host's Docker
@@ -78,8 +142,20 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       REDIS_URL: redis://redis:6379/0
-      # One t3.micro core; more slots would only cause contention.
+      # One t3.micro core; more slots would only cause contention, and
+      # every extra slot is another uncapped sandbox against the budget
+      # at the top of this file.
       WORKER_COUNT: ${WORKER_COUNT:-2}
+    mem_limit: 96m
+    memswap_limit: 96m
+    cpus: 0.40
+    # Shutdown has to finish judging the job in flight and then remove the
+    # sandbox container it created. That path can take ~15s, and the
+    # default 10s SIGKILL cuts it off mid-execution, orphaning a container
+    # that still holds memory nothing will reclaim. 45s covers it with
+    # room for a slow `docker rm` on a loaded host.
+    stop_grace_period: 45s
+    logging: *default-logging
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -90,11 +166,21 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      # 0.6 of the 160 MB cgroup limit (~96 MB). RabbitMQ reads the cgroup
+      # limit, so this makes it block publishers and page out queues on
+      # its own terms instead of being OOM-killed by the kernel — a
+      # blocked publisher recovers, a killed broker loses its channels.
+      RABBITMQ_VM_MEMORY_HIGH_WATERMARK: "0.6"
     # No ports published: reachable only inside the compose network.
     expose:
       - "5672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+    mem_limit: 160m
+    memswap_limit: 160m
+    cpus: 0.35
+    stop_grace_period: 30s
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 15s
@@ -105,9 +191,26 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # maxmemory sits below the cgroup limit on purpose: redis evicting a
+    # rate-limit key is a degraded rate limiter, whereas redis being
+    # OOM-killed takes War Room fan-out down with it.
+    command:
+      - "redis-server"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+      - "--maxmemory"
+      - "32mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
     expose:
       - "6379"
+    mem_limit: 48m
+    memswap_limit: 48m
+    cpus: 0.15
+    stop_grace_period: 10s
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 15s
