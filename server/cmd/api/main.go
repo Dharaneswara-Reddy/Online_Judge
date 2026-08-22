@@ -13,8 +13,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/toji339/online-judge/internal/config"
 	"github.com/toji339/online-judge/internal/database"
@@ -24,6 +27,42 @@ import (
 	"github.com/toji339/online-judge/internal/routes"
 )
 
+// setGinMode puts Gin in release mode unless this is explicitly a
+// development environment.
+//
+// Gin defaults to debug mode, which dumps the whole route table at
+// startup, logs a warning on every request, and is measurably slower.
+// The route table is a map of the API's attack surface, so it should not
+// be sitting in production logs.
+//
+// Release is the default on purpose: a deployment that forgets to set
+// anything gets the safe mode, and only someone who asks for
+// development gets the noisy one. GIN_MODE still wins if it is set,
+// since that is the knob Gin's own documentation points people at.
+func setGinMode(appEnv, ginMode string) string {
+	// Only the three modes Gin knows are passed through. An unrecognised
+	// value is reported and ignored here — though note Gin's own package
+	// init already reads GIN_MODE and panics on a bad one before this
+	// function ever runs, so the warning below is a backstop for a value
+	// arriving some other way, not a guarantee.
+	switch ginMode {
+	case gin.DebugMode, gin.ReleaseMode, gin.TestMode:
+		gin.SetMode(ginMode)
+		return gin.Mode()
+	case "":
+		// Nothing pinned; fall through to the environment check.
+	default:
+		log.Printf("WARNING: GIN_MODE=%q is not a Gin mode, ignoring it", ginMode)
+	}
+
+	if strings.EqualFold(appEnv, "development") || strings.EqualFold(appEnv, "dev") {
+		gin.SetMode(gin.DebugMode)
+	} else {
+		gin.SetMode(gin.ReleaseMode)
+	}
+	return gin.Mode()
+}
+
 func main() {
 	// Steps to follow while starting the server
 	// ============================================
@@ -31,6 +70,11 @@ func main() {
 	// 1. Load environment variables from .env
 	cfg := config.Load()
 	log.Println("Configuration loaded successfully")
+
+	//    Decide Gin's mode now, before anything creates an engine. This
+	//    has to come after the .env file is loaded so APP_ENV can be set
+	//    there like every other setting.
+	log.Printf("Gin running in %s mode", setGinMode(os.Getenv("APP_ENV"), os.Getenv("GIN_MODE")))
 
 	// 2. Connect to MongoDB Atlas
 	client, err := database.Connect(cfg.MongoURI)
