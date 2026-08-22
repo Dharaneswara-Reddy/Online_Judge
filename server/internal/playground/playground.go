@@ -54,6 +54,21 @@ const (
 	MaxCodeBytes = 64 * 1024
 )
 
+// MaxTotalRuntime bounds one whole playground request — compilation and
+// every test case together — independently of the per-case limits.
+//
+// The per-case limits do not compose into a budget: MaxTestCases at
+// MaxTimeLimitMs each is over three minutes of CPU for one click of
+// "Run", and on a two-vCPU host a couple of those hold every judging
+// slot and drain the instance's CPU credits while they do it. This is
+// the ceiling on the whole request, so a caller cannot buy more compute
+// by asking for more cases.
+//
+// It sits below RemoteTimeout on purpose: past that point the API has
+// stopped waiting and every further second of compute is spent on an
+// answer nobody will read.
+const MaxTotalRuntime = 40 * time.Second
+
 // ErrUnknownMode is returned for a request whose Mode is not recognised.
 var ErrUnknownMode = errors.New("playground: unknown run mode")
 
@@ -133,14 +148,22 @@ func limitsFor(req Request) judge.Limits {
 type LocalRunner struct {
 	sandbox judge.Sandbox
 	engine  *judge.Judge
+	// budget is the wall-clock ceiling on one request. It is a field
+	// rather than a bare constant only so tests can shrink it.
+	budget time.Duration
 }
 
 // NewLocalRunner builds a runner over a sandbox implementation.
 func NewLocalRunner(sandbox judge.Sandbox) *LocalRunner {
-	return &LocalRunner{sandbox: sandbox, engine: judge.NewJudge(sandbox)}
+	return &LocalRunner{
+		sandbox: sandbox,
+		engine:  judge.NewJudge(sandbox),
+		budget:  MaxTotalRuntime,
+	}
 }
 
-// Run executes one playground request to completion.
+// Run executes one playground request to completion, or until the
+// overall budget runs out.
 func (r *LocalRunner) Run(ctx context.Context, req Request) (Response, error) {
 	if len(req.Code) > MaxCodeBytes {
 		return Response{}, fmt.Errorf("playground: code exceeds %d bytes", MaxCodeBytes)
@@ -148,6 +171,14 @@ func (r *LocalRunner) Run(ctx context.Context, req Request) (Response, error) {
 	if len(req.TestCases) > MaxTestCases {
 		return Response{}, fmt.Errorf("playground: at most %d test cases may be run at once", MaxTestCases)
 	}
+
+	// The whole request runs under one deadline. Enforced here rather
+	// than by the caller for the same reason limitsFor is applied here:
+	// the process that creates containers must not depend on whoever
+	// published the message having bounded anything. If the caller's own
+	// context is shorter, it still wins — this only ever shortens.
+	ctx, cancel := context.WithTimeout(ctx, r.budget)
+	defer cancel()
 
 	switch req.Mode {
 	case ModeEvaluate:
