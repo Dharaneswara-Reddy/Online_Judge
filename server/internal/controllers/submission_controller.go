@@ -62,7 +62,7 @@ func (sc *SubmissionController) Submit(c *gin.Context) {
 		Code     string `json:"code" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid request body", "details": err.Error()})
+		writeBindError(c, err)
 		return
 	}
 	userID := c.GetString("userID")
@@ -113,7 +113,7 @@ func (sc *SubmissionController) SubmitToWarRoom(c *gin.Context) {
 		Code     string `json:"code" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid request body", "details": err.Error()})
+		writeBindError(c, err)
 		return
 	}
 

@@ -76,7 +76,7 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 
 	var update models.ProfileUpdate
 	if err := c.ShouldBindJSON(&update); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid request body", "details": err.Error()})
+		writeBindError(c, err)
 		return
 	}
 

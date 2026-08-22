@@ -31,7 +31,7 @@ func (pc *ProblemController) CreateProblem(c *gin.Context) {
 		StarterCode   map[string]string `json:"starterCode"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid request body", "details": err.Error()})
+		writeBindError(c, err)
 		return
 	}
 
@@ -138,7 +138,7 @@ func (pc *ProblemController) UpdateProblem(c *gin.Context) {
 		StarterCode   map[string]string `json:"starterCode"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid request body", "details": err.Error()})
+		writeBindError(c, err)
 		return
 	}
 
@@ -180,7 +180,7 @@ func (pc *ProblemController) AddTestCase(c *gin.Context) {
 		IsSample       bool   `json:"isSample"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid request body", "details": err.Error()})
+		writeBindError(c, err)
 		return
 	}
 
