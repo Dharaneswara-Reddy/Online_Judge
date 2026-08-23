@@ -13,9 +13,10 @@
 # Secrets come from deploy/.env on the host, which is git-ignored and
 # never committed. MongoDB stays on Atlas.
 #
-# Only the frontend publishes a port. RabbitMQ, Redis and the API are
-# reachable only on the internal compose network, so nothing but 80 is
-# exposed to the internet.
+# Only the frontend publishes ports, 80 and 443. Port 80 carries nothing
+# but the ACME challenge and a redirect to HTTPS. RabbitMQ, Redis and the
+# API are reachable only on the internal compose network, so nothing else
+# is exposed to the internet.
 #
 # ---------------------------------------------------------------------
 # Memory budget
@@ -160,7 +161,17 @@ services:
       REDIS_URL: redis://redis:6379/0
       # Plain HTTP for now, so a Secure cookie would be dropped by the
       # browser. Set to true the moment TLS terminates in front of this.
-      SECURE_COOKIES: "false"
+      # Secure cookies, on. This was hardcoded to "false" for as long as
+      # the site was served over plain HTTP, because a browser silently
+      # drops a Secure cookie on an http:// origin and every login would
+      # have appeared to succeed while leaving the user logged out.
+      #
+      # It is now driven by the environment with a secure default: the
+      # stack this file describes terminates TLS and redirects http to
+      # https, so anything but true would send the session cookie over a
+      # channel the site no longer serves. Override to false only for a
+      # deliberate plain-HTTP deployment.
+      SECURE_COOKIES: ${SECURE_COOKIES:-true}
     expose:
       - "8080"
     mem_limit: 144m
