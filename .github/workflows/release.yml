@@ -105,6 +105,21 @@ jobs:
       contents: read
       packages: write
 
+    # Native runners per architecture, not QEMU on one runner.
+    #
+    # The first attempt emulated arm64 with QEMU on an amd64 runner. The
+    # sandbox took 5 minutes and the server 12, but the client — npm ci
+    # plus a Vite build of a Monaco-heavy bundle — ran for six hours and
+    # was killed by the job timeout, so :latest was never promoted and no
+    # arm64 image reached the registry at all.
+    #
+    # ubuntu-24.04-arm is free for public repositories and runs on real
+    # ARM hardware, so each leg now builds only its own architecture at
+    # native speed. The cost is that a tag is no longer produced by a
+    # single build: each leg pushes an untagged image by digest, and the
+    # merge job below assembles the digests into one manifest list.
+    runs-on: ${{ matrix.runner }}
+
     strategy:
       # Kept false, but for a different reason than before. It used to be
       # actively harmful: each leg pushed :latest itself, so a failed
@@ -118,7 +133,13 @@ jobs:
       # of only the first to break.
       fail-fast: false
       matrix:
+        name: [server, client, sandbox]
+        arch: [amd64, arm64]
         include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
           - name: server
             context: server
           - name: client
@@ -148,21 +169,6 @@ jobs:
         with:
           ref: ${{ steps.rel.outputs.sha }}
 
-      # QEMU lets an amd64 runner emulate arm64. It is genuinely slow —
-      # apt-installing a JDK and build-essential under emulation takes
-      # tens of minutes for the sandbox image — but a release runs only on
-      # a merge to main, and correctness matters more than minutes here.
-      #
-      # The faster alternative is a per-architecture matrix on native
-      # runners (ubuntu-24.04-arm is free for public repositories) pushing
-      # by digest, with a manifest-merge job afterwards. That is a much
-      # larger change to a workflow that cannot be tested before it runs
-      # on main, so it is deliberately left as a follow-up rather than
-      # bundled into the migration.
-      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
-        with:
-          platforms: arm64
-
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
@@ -177,11 +183,11 @@ jobs:
         id: image
         run: echo "ref=${REGISTRY}/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/codearena-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: ${{ matrix.context }}
-          push: true
           # Both architectures, published as one manifest list per tag.
           #
           # arm64 is what production moves to: the instance becomes a
@@ -194,17 +200,117 @@ jobs:
           # A manifest list means neither the compose file nor the deploy
           # docs need an architecture in them: the daemon picks the right
           # image for the host it is on.
-          platforms: linux/amd64,linux/arm64
-          # ONLY the immutable SHA tag. :latest is moved by the promote
-          # job once every image for this commit exists, so the three
-          # halves of a deployment can never be published out of step.
-          # The SHA is the one from the gate above, not github.sha, which
-          # under workflow_run is a different commit.
-          tags: ${{ steps.image.outputs.ref }}:${{ steps.rel.outputs.sha }}
+          platforms: linux/${{ matrix.arch }}
+          # No tag here. A tag can only name one image, and two legs are
+          # producing two halves of the same tag; whichever pushed last
+          # would win and silently discard the other architecture. Each
+          # leg pushes an untagged image identified by its digest, and the
+          # merge job binds both digests to the SHA tag.
+          outputs: type=image,name=${{ steps.image.outputs.ref }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             VITE_API_URL=/api
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Cache scoped per image and architecture. A shared scope would
+          # have the arm64 leg reading amd64 layers and rebuilding them
+          # anyway, which is slower than no cache at all.
+          cache-from: type=gha,scope=${{ matrix.name }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}-${{ matrix.arch }}
+
+      # The digest is the only handle the merge job has on what this leg
+      # produced, and it cannot be derived from the tag, because there is
+      # no tag yet.
+      - name: Export the digest
+        run: |
+          mkdir -p /tmp/digests
+          # The colon is stripped from sha256:... — artifact uploads reject
+          # it in a filename, and the merge job puts it back.
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${{ matrix.name }}-${{ matrix.arch }}-${digest#sha256:}"
+          echo "${{ matrix.name }} ${{ matrix.arch }} $digest"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digest-${{ matrix.name }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------
+  # Assemble one manifest list per image
+  # ---------------------------------------------------------------------
+  # Each build leg pushed an untagged image for one architecture. This
+  # binds the two digests for an image to the SHA tag, so a single
+  # reference serves both: the daemon on an x86 host resolves it to the
+  # amd64 image and the daemon on a Graviton host to the arm64 one.
+  #
+  # That is what keeps architecture out of the compose file and the deploy
+  # docs entirely, and it is what makes the rollback cheap — the old x86
+  # instance can pull the very same tag the new arm64 one runs.
+  merge:
+    name: Assemble manifest (${{ matrix.name }})
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [server, client, sandbox]
+
+    steps:
+      - name: Resolve the commit CI tested
+        id: rel
+        run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: digest-${{ matrix.name }}-*
+          merge-multiple: true
+          path: /tmp/digests
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalise image name
+        id: image
+        run: echo "ref=${REGISTRY}/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/codearena-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+
+      # Both architectures must be present. Assembling a "multi-arch" tag
+      # from one digest would publish something that looks complete and
+      # silently fails to run on the other host — the failure mode this
+      # whole arrangement exists to prevent.
+      - name: Create the manifest list
+        run: |
+          cd /tmp/digests
+          count=$(ls -1 | wc -l)
+          echo "digests found for ${{ matrix.name }}: $count"
+          ls -1
+          if [ "$count" -ne 2 ]; then
+            echo "expected exactly 2 digests (amd64 and arm64), found $count"
+            exit 1
+          fi
+          refs=""
+          for f in *; do
+            refs="$refs ${{ steps.image.outputs.ref }}@sha256:${f##*-}"
+          done
+          docker buildx imagetools create \
+            --tag ${{ steps.image.outputs.ref }}:${{ steps.rel.outputs.sha }} \
+            $refs
+
+      - name: Verify both architectures resolve
+        run: |
+          out=$(docker buildx imagetools inspect ${{ steps.image.outputs.ref }}:${{ steps.rel.outputs.sha }})
+          echo "$out"
+          echo "$out" | grep -q "linux/amd64" || { echo "amd64 missing from the manifest"; exit 1; }
+          echo "$out" | grep -q "linux/arm64" || { echo "arm64 missing from the manifest"; exit 1; }
 
   # ---------------------------------------------------------------------
   # Atomic promotion of :latest
@@ -225,7 +331,7 @@ jobs:
   # that persists until someone notices.
   promote:
     name: Point :latest at this build
-    needs: build
+    needs: merge
     runs-on: ubuntu-latest
 
     permissions:
@@ -236,21 +342,6 @@ jobs:
       - name: Resolve the commit CI tested
         id: rel
         run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
-
-      # QEMU lets an amd64 runner emulate arm64. It is genuinely slow —
-      # apt-installing a JDK and build-essential under emulation takes
-      # tens of minutes for the sandbox image — but a release runs only on
-      # a merge to main, and correctness matters more than minutes here.
-      #
-      # The faster alternative is a per-architecture matrix on native
-      # runners (ubuntu-24.04-arm is free for public repositories) pushing
-      # by digest, with a manifest-merge job afterwards. That is a much
-      # larger change to a workflow that cannot be tested before it runs
-      # on main, so it is deliberately left as a follow-up rather than
-      # bundled into the migration.
-      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
-        with:
-          platforms: arm64
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
