@@ -40,14 +40,28 @@
 #   ---------
 #   =  815 MB   for the compose services below
 #
-#      160 MB   rabbitmq   (Erlang VM; watermark set below so it throttles
-#                           itself before the cgroup OOM-killer fires)
+#      256 MB   rabbitmq   Measured at 100 MB idle on the existing host,
+#                           but the health probe runs rabbitmq-diagnostics,
+#                           which starts a SECOND Erlang VM inside the same
+#                           cgroup. At 160 MB that probe was OOM-killed on
+#                           every run (exit 137), so the container never
+#                           became healthy and everything depending on it
+#                           refused to start. The broker itself was fine —
+#                           the limit has to cover the broker plus its own
+#                           diagnostics, not just the broker.
 #      144 MB   api
 #      112 MB   worker
 #       56 MB   redis      (maxmemory 40mb, so redis evicts before it OOMs)
 #       40 MB   frontend   (nginx serving static files)
 #   ---------
-#      512 MB   committed, leaving ~300 MB (17%) genuinely spare.
+#      608 MB   committed, leaving ~207 MB (11%) genuinely spare.
+#
+# Idle usage measured on the existing production host for comparison:
+# frontend 5.7 MB, api 8.0 MB, worker 7.4 MB, rabbitmq 100 MB, redis
+# 6.4 MB — 127 MB in total. The limits above are deliberately well above
+# that, because idle is not the number that matters: a Go heap under load
+# and a Mongo connection pool both grow, and a limit that only fits idle
+# is a limit that kills the process the moment it is used.
 #
 # That spare margin is the point of the migration. The old host ran at a
 # 12 MB margin with one sandbox; this one runs at ~300 MB with two.
@@ -203,18 +217,24 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
-      # 0.6 of the 160 MB cgroup limit (~96 MB). RabbitMQ reads the cgroup
-      # limit, so this makes it block publishers and page out queues on
-      # its own terms instead of being OOM-killed by the kernel — a
-      # blocked publisher recovers, a killed broker loses its channels.
-      RABBITMQ_VM_MEMORY_HIGH_WATERMARK: "0.6"
+      # No RABBITMQ_VM_MEMORY_HIGH_WATERMARK here. RabbitMQ 4 treats that
+      # variable as deprecated and refuses to boot when it is set — it
+      # exits 1 on every start, which is a crash loop, not a warning.
+      #
+      # It is also unnecessary. The watermark defaults to 0.6 relative,
+      # and RabbitMQ reads the cgroup limit rather than host memory, so
+      # the effective ceiling is already 0.6 of the mem_limit below
+      # (~96 MB). That is exactly the intent: block publishers and page
+      # out queues on its own terms rather than being OOM-killed by the
+      # kernel, because a blocked publisher recovers and a killed broker
+      # loses its channels.
     # No ports published: reachable only inside the compose network.
     expose:
       - "5672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
-    mem_limit: 160m
-    memswap_limit: 160m
+    mem_limit: 256m
+    memswap_limit: 256m
     cpus: 0.35
     stop_grace_period: 30s
     logging: *default-logging
