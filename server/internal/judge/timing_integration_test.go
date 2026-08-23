@@ -113,3 +113,54 @@ func TestJudgeTiming_RealHardware(t *testing.T) {
 		})
 	}
 }
+
+// TestSandboxImage_GoBuildCacheIsPreWarmed guards the one thing standing
+// between Go submissions and spurious compile failures.
+//
+// Measured on the production-target instance (t4g.small, 1 vCPU, 256 MB,
+// the judge's own flags): a compile with the pre-warmed cache takes about
+// 0.5s, while the same compile with an empty cache takes 12-15s idle and
+// 17s under load, against a 15s budget. The cache is therefore not an
+// optimisation — without it, correct Go submissions fail as compile
+// errors whenever the machine is busy.
+//
+// It is easy to lose by accident: drop the RUN that builds it from the
+// Dockerfile, or change GOCACHE in the exec environment, and everything
+// still looks fine on a fast idle laptop while failing in production.
+func TestSandboxImage_GoBuildCacheIsPreWarmed(t *testing.T) {
+	sandbox, err := NewDockerSandbox()
+	if err != nil {
+		t.Fatalf("docker sandbox: %v", err)
+	}
+
+	// A Go program is the only way to reach the exec environment the
+	// judge really uses, GOCACHE included.
+	sub, err := sandbox.NewSubmission(context.Background(), "go",
+		"package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"cache-probe\") }",
+		Limits{TimeLimit: 5 * time.Second, MemoryLimitMB: 256})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	defer sub.Close(context.WithoutCancel(context.Background()))
+
+	start := time.Now()
+	res, err := sub.Compile(context.Background())
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("compile failed (%d): %s", res.ExitCode, res.Stderr)
+	}
+
+	t.Logf("go compile with the image's cache: %s (budget %s)", elapsed.Round(time.Millisecond), compileTimeout)
+
+	// A cold compile is an order of magnitude slower, so a generous
+	// threshold still separates them unambiguously. This is deliberately
+	// not a tight performance assertion — it checks the cache exists.
+	if elapsed > compileTimeout/3 {
+		t.Errorf("go compile took %s, over a third of the %s budget — the pre-warmed "+
+			"build cache is missing or GOCACHE no longer points at it. See the RUN that "+
+			"populates /opt/gocache in docker/judge-sandbox/Dockerfile.", elapsed, compileTimeout)
+	}
+}
