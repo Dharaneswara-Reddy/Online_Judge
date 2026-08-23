@@ -111,6 +111,19 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      # Let's Encrypt material, read-only. nginx's master process starts as
+      # root and reads the key once at startup, so the private key keeps
+      # its 600 root-only permissions on the host — the container is given
+      # no way to modify any of it.
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # Shared ACME webroot. Renewal writes the challenge file here from
+      # the host and nginx serves it from the same directory, which is what
+      # lets certbot renew without stopping the container. The first
+      # certificate had to use the standalone plugin because the dotfile
+      # rule answered the challenge path with 404.
+      - /var/www/certbot:/var/www/certbot:ro
     mem_limit: 40m
     memswap_limit: 40m
     cpus: 0.20
@@ -120,7 +133,13 @@ services:
     # unless-stopped` alone never notices. Serving the SPA shell is the
     # honest proxy for "this container is still useful".
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      # Checks TLS on the loopback. Certificate verification is skipped
+      # deliberately: the certificate is issued for the public hostname,
+      # not for 127.0.0.1, and this probe is asking whether nginx is
+      # serving — not whether the certificate chains. Hitting port 80
+      # instead would only ever exercise the redirect, and following it
+      # would send a health check out to the public internet and back.
+      test: ["CMD-SHELL", "wget -q -O /dev/null --no-check-certificate https://127.0.0.1/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
