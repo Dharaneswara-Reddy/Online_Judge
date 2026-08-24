@@ -47,7 +47,7 @@ func delivery(t *testing.T, redelivered bool) (amqp.Delivery, *fakeAcknowledger)
 func TestDispatch_AcksOnSuccess(t *testing.T) {
 	d, ack := delivery(t, false)
 
-	dispatch(context.Background(), d, func(context.Context, queue.Job) error { return nil })
+	dispatch(context.Background(), d, func(context.Context, queue.Job) error { return nil }, noCapture(t))
 
 	assert.True(t, ack.acked)
 	assert.False(t, ack.nacked)
@@ -68,7 +68,7 @@ func TestDispatch_RequeuesAFailedJobOnce(t *testing.T) {
 
 	dispatch(context.Background(), d, func(context.Context, queue.Job) error {
 		return errors.New("mongo unreachable")
-	})
+	}, noCapture(t))
 
 	assert.True(t, ack.nacked)
 	assert.True(t, ack.requeue, "a first failure goes back on the queue")
@@ -79,24 +79,45 @@ func TestDispatch_RequeuesAFailedJobOnce(t *testing.T) {
 // a hot loop that starves every other submission.
 func TestDispatch_StopsRetryingARedeliveredJob(t *testing.T) {
 	d, ack := delivery(t, true)
+	var captured []string
 
 	dispatch(context.Background(), d, func(context.Context, queue.Job) error {
 		return errors.New("load submission sub-1: connection refused")
-	})
+	}, recordingCapture(&captured))
 
-	assert.True(t, ack.nacked)
-	assert.False(t, ack.requeue, "the retry budget is spent — the reaper reclaims it instead")
+	// Acked, not nacked: the copy is safely filed on the dead-letter
+	// queue, so removing the original is the correct settlement. Before
+	// dead-lettering existed this was a discard, and the message was
+	// simply gone.
+	assert.True(t, ack.acked, "a captured job is acked once its copy is filed")
+	assert.False(t, ack.requeue)
+	assert.Equal(t, []string{deadLetterReasonExhausted}, captured,
+		"a job that has spent its retries is dead-lettered rather than dropped silently")
 }
 
 func TestDispatch_DiscardsAMalformedJob(t *testing.T) {
+	var captured []string
 	ack := &fakeAcknowledger{}
 	d := amqp.Delivery{Acknowledger: ack, Body: []byte("{not json")}
 
 	dispatch(context.Background(), d, func(context.Context, queue.Job) error {
 		t.Fatal("the handler must not see a malformed job")
 		return nil
-	})
+	}, recordingCapture(&captured))
 
-	assert.True(t, ack.nacked)
+	assert.True(t, ack.acked, "a captured job is acked once its copy is filed")
 	assert.False(t, ack.requeue)
+	assert.Equal(t, []string{deadLetterReasonMalformed}, captured,
+		"a message we cannot even decode is the one most worth keeping a copy of")
+}
+
+// recordingCapture notes what was dead-lettered instead of failing on it.
+// Two of the cases below now capture on purpose — a malformed job and one
+// that has spent its retry budget are exactly the messages worth keeping
+// a copy of, since nothing else records that they existed.
+func recordingCapture(reasons *[]string) captureFunc {
+	return func(_ context.Context, _ []byte, reason string, _ error) error {
+		*reasons = append(*reasons, reason)
+		return nil
+	}
 }

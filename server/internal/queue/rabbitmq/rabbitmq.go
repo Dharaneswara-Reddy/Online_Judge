@@ -159,7 +159,10 @@ func (c *Client) DeleteQueues(ctx context.Context) error {
 			return fmt.Errorf("delete queue %s: %w", name, err)
 		}
 	}
-	return nil
+
+	// The capture topology is part of what this client declared, so it is
+	// part of what it has to clean up.
+	return c.DeleteDeadLetterTopology(ctx)
 }
 
 // reconnect establishes a fresh connection and publish channel, and
@@ -217,11 +220,23 @@ func (c *Client) reconnect() error {
 	return nil
 }
 
-// declareTopology declares every lane queue. Declarations are idempotent,
-// so redeclaring after a reconnect is safe and cheap.
+// declareTopology declares every lane queue and the dead-letter topology
+// beside it. Declarations are idempotent, so redeclaring after a
+// reconnect is safe and cheap.
 //
-// The default exchange is used deliberately: each lane routes straight to
-// a queue by name, so no exchange or binding of our own is needed.
+// The default exchange is used deliberately for the lanes: each routes
+// straight to a queue by name, so no exchange or binding of our own is
+// needed.
+//
+// The lane declarations pass nil arguments and must keep passing nil
+// arguments. `judge.standard` and `judge.warroom` already exist as
+// durable, argument-free queues on the production broker, and RabbitMQ
+// answers a redeclaration with different arguments with a channel-killing
+// PRECONDITION_FAILED. Since this function runs on every publish channel,
+// every consume channel and after every reconnect, adding an argument
+// here would not degrade judging — it would stop it. Dead-lettering is
+// therefore arranged in deadletter.go under names the broker has never
+// seen; see the commentary there.
 func (c *Client) declareTopology(ch *amqp.Channel) error {
 	for lane := range queueNames {
 		name, _ := c.queueName(lane)
@@ -231,13 +246,14 @@ func (c *Client) declareTopology(ch *amqp.Channel) error {
 			false, // do not auto-delete when the last consumer leaves
 			false, // not exclusive
 			false, // wait for the declare to be confirmed
-			nil,
+			nil,   // no arguments — see the note above before changing this
 		)
 		if err != nil {
 			return fmt.Errorf("declare queue %s: %w", name, err)
 		}
 	}
-	return nil
+
+	return c.declareDeadLetterTopology(ch)
 }
 
 // live returns the current connection and publish channel if the
@@ -596,7 +612,7 @@ func (c *Client) consumeOnce(ctx context.Context, conn *amqp.Connection, lane qu
 			go func(d amqp.Delivery) {
 				defer wg.Done()
 				defer func() { <-slots }()
-				dispatch(ctx, d, handler)
+				dispatch(ctx, d, handler, c.captureFor(lane))
 			}(delivery)
 		}
 	}
@@ -653,13 +669,18 @@ func decideAck(handlerErr error, shuttingDown, redelivered bool) ackAction {
 // it. The judging pipeline is idempotent — the claim and the verdict are
 // both conditional writes — so a duplicate delivery cannot double-judge
 // or double-count a solve.
-func dispatch(ctx context.Context, delivery amqp.Delivery, handler queue.Handler) {
+//
+// capture publishes a copy of a job that is being given up on to the
+// dead-letter exchange. It is taken as a parameter rather than read off a
+// Client so this function stays testable without a broker.
+func dispatch(ctx context.Context, delivery amqp.Delivery, handler queue.Handler, capture captureFunc) {
 	var job queue.Job
 	if err := json.Unmarshal(delivery.Body, &job); err != nil {
-		// A malformed job can never succeed, so drop it rather than
-		// letting it loop through the queue forever.
-		log.Printf("rabbitmq: discarding malformed job: %v", err)
-		_ = delivery.Nack(false, false)
+		// A malformed job can never succeed, so it must leave the queue
+		// rather than loop forever — but it is also the one message worth
+		// keeping a copy of, since nothing else records that it existed.
+		log.Printf("rabbitmq: dead-lettering malformed job: %v", err)
+		settleCaptured(ctx, delivery, capture, "malformed", deadLetterReasonMalformed, err)
 		return
 	}
 
@@ -680,8 +701,39 @@ func dispatch(ctx context.Context, delivery amqp.Delivery, handler queue.Handler
 		}
 
 	case ackDiscard:
-		log.Printf("ERROR: rabbitmq: job %s failed twice, dropping it: %v", job.SubmissionID, err)
+		log.Printf("ERROR: rabbitmq: job %s failed twice, dead-lettering it: %v", job.SubmissionID, err)
+		settleCaptured(ctx, delivery, capture, job.SubmissionID, deadLetterReasonExhausted, err)
+	}
+}
+
+// settleCaptured publishes a copy of a job that is being abandoned and
+// only then settles the delivery.
+//
+// The ordering is the point. Publishing first and acknowledging second
+// means a crash in between costs a redelivery, which at-least-once
+// already tolerates and the idempotent pipeline already absorbs. Settling
+// first would cost the message, which is precisely the loss this exists
+// to close.
+//
+// The delivery is acknowledged rather than rejected once a copy is safe.
+// That matters if an operator has also applied a broker policy putting a
+// dead-letter exchange on the lane: an acknowledgement is not a
+// rejection, so the broker will not file a second copy of the same job.
+//
+// If the copy cannot be published, the job falls back to the behaviour
+// that was here before — discarded without requeue, left to the
+// stale-submission reaper. That is a lost diagnostic, not a regression,
+// and it is still far better than requeueing a poison message forever.
+func settleCaptured(ctx context.Context, delivery amqp.Delivery, capture captureFunc, label, reason string, cause error) {
+	if err := capture(ctx, delivery.Body, reason, cause); err != nil {
+		log.Printf("ERROR: rabbitmq: could not dead-letter job %s (%s), discarding it: %v", label, reason, err)
 		_ = delivery.Nack(false, false)
+		return
+	}
+	if ackErr := delivery.Ack(false); ackErr != nil {
+		// The copy is already filed, so a redelivery here is recoverable:
+		// the job is retried and, if it fails again, captured again.
+		log.Printf("rabbitmq: could not ack dead-lettered job %s: %v", label, ackErr)
 	}
 }
 
