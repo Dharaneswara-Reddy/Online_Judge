@@ -270,6 +270,25 @@ func EnsureIndexes(db *mongo.Database) error {
 		// prefix of any index above, so without this it is a collection
 		// scan on the largest collection in the system.
 		{
+			// Audited and deliberately kept, though it is redundant on
+			// paper. MongoDB can serve a query from any prefix of a
+			// compound index, and {status, submitted_at} below has
+			// {status} as its prefix — so every status-only filter in
+			// submission/mongorepo (the list filter, the admission-control
+			// counts, the reaper's status clauses) could be served by that
+			// one instead.
+			//
+			// It stays because the gain from dropping it is one index's
+			// worth of write amplification on the busiest collection,
+			// which is not measurable at this scale, while the cost of
+			// being wrong is a production query falling back to a
+			// collection scan. Nothing in the source sorts on status
+			// alone, but "nothing I found" is not the same as "nothing" —
+			// and an index that is merely redundant costs far less than
+			// one that turns out to have been load-bearing.
+			//
+			// If it is ever removed, do it after an explain() against the
+			// real collection, not from reading the source.
 			Keys: bson.D{{Key: "status", Value: 1}},
 		},
 		// Backs the stale-submission sweep, which asks for non-terminal
