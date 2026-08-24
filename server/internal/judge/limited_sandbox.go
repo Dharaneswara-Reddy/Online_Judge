@@ -86,6 +86,26 @@ func (s *limitedSubmission) Run(ctx context.Context, stdin string) (ExecuteResul
 	return s.inner.Run(ctx, stdin)
 }
 
+// PeakMemoryKB forwards to the wrapped environment.
+//
+// Without this the wrapper silently swallows the capability: Judge asks
+// for MemoryReporter with a type assertion, limitedSubmission does not
+// implement it, and every submission reports no memory at all. It passed
+// every local test because those drive DockerSandbox directly — the
+// wrapper is only added in the worker, so the gap appeared solely in
+// production.
+//
+// A wrapper that can be dropped from an optional interface is a wrapper
+// that hides features, so anything added to SubmissionSandbox has to be
+// forwarded here too.
+func (s *limitedSubmission) PeakMemoryKB(ctx context.Context) (int64, bool) {
+	reporter, ok := s.inner.(MemoryReporter)
+	if !ok {
+		return 0, false
+	}
+	return reporter.PeakMemoryKB(ctx)
+}
+
 // Close tears the environment down and hands the slot back exactly once,
 // however many times it is called. Releasing twice would quietly raise
 // the ceiling, which is the same bug in a different shape.

@@ -158,3 +158,52 @@ func TestLimitedSandbox_CapacityIsReadable(t *testing.T) {
 	assert.Equal(t, 3, judge.NewLimitedSandbox(&countingSandbox{}, 3).Capacity(),
 		"startup logging needs to state the real ceiling")
 }
+
+// memoryStub reports a fixed peak so the wrapper can be checked for
+// forwarding it.
+type memoryStub struct {
+	judge.SubmissionSandbox
+	peak int64
+}
+
+func (m memoryStub) PeakMemoryKB(context.Context) (int64, bool) { return m.peak, true }
+
+type memorySandbox struct{ peak int64 }
+
+func (m memorySandbox) NewSubmission(context.Context, string, string, judge.Limits) (judge.SubmissionSandbox, error) {
+	return memoryStub{SubmissionSandbox: noopSubmission{}, peak: m.peak}, nil
+}
+
+type noopSubmission struct{}
+
+func (noopSubmission) Compile(context.Context) (judge.ExecuteResult, error) {
+	return judge.ExecuteResult{}, nil
+}
+func (noopSubmission) Run(context.Context, string) (judge.ExecuteResult, error) {
+	return judge.ExecuteResult{}, nil
+}
+func (noopSubmission) Close(context.Context) error { return nil }
+
+// The wrapper must not swallow the capability. This is the production
+// path: the worker wraps every sandbox in LimitedSandbox, so a capability
+// the wrapper drops is a capability no submission ever sees — which is
+// exactly how memoryKb stayed 0 in production while passing locally,
+// where the tests drive DockerSandbox directly.
+func TestLimitedSandbox_ForwardsMemoryReporting(t *testing.T) {
+	limited := judge.NewLimitedSandbox(memorySandbox{peak: 4242}, 1)
+	sub, err := limited.NewSubmission(context.Background(), "python", "", judge.Limits{})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	defer sub.Close(context.Background())
+
+	reporter, ok := sub.(judge.MemoryReporter)
+	if !ok {
+		t.Fatal("the wrapped submission no longer implements MemoryReporter — " +
+			"Judge's type assertion fails and every submission reports no memory")
+	}
+	peak, measured := reporter.PeakMemoryKB(context.Background())
+	if !measured || peak != 4242 {
+		t.Errorf("peak = %d measured=%v, want 4242 true", peak, measured)
+	}
+}
