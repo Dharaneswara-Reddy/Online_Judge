@@ -5,9 +5,12 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/toji339/online-judge/internal/session"
 )
 
 // AuthMiddleware returns a Gin middleware function that validates
@@ -22,7 +25,12 @@ import (
 //
 // The token itself is never logged or echoed back. It is a bearer
 // credential, so a copy of it in a log line is a copy of the account.
-func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
+// revocations may be nil, which means session revocation is not
+// configured. Authentication then behaves exactly as it did before: the
+// alternative — failing shut — would turn a missing dependency into a
+// site-wide lockout, and the token is still signed, unexpired and
+// algorithm-pinned regardless.
+func AuthMiddleware(jwtSecret string, revocations session.Checker) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Steps to follow while validating the auth token
 		// =================================================
@@ -52,13 +60,52 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 			return
 		}
 
-		// 3. Set user information on the Gin context for downstream handlers
+		// 3. Reject a session that has been revoked.
+		//
+		//    A signature check alone can only say the token was issued by
+		//    us and has not expired. It cannot say the user has since
+		//    logged out or had their sessions ended, because a JWT is a
+		//    bearer credential that stays valid until it expires. This is
+		//    the step that makes logout and "log out everywhere" mean
+		//    something, and it is why the token carries a jti.
+		//
+		//    A store error is treated as revoked rather than allowed: the
+		//    check exists for the moment an account is known to be
+		//    compromised, and failing open there would defeat it. The
+		//    error itself is logged without the token.
+		if revocations != nil {
+			revoked, err := revocations.IsRevoked(c.Request.Context(),
+				claims.SessionID(), claims.UserID(), claims.IssuedAtTime())
+			if err != nil {
+				log.Printf("auth: could not check session revocation: %v", err)
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"success": false,
+					"message": "Could not verify session",
+				})
+				c.Abort()
+				return
+			}
+			if revoked {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"success": false,
+					"message": "Session has ended — please sign in again",
+				})
+				c.Abort()
+				return
+			}
+		}
+
+		// 4. Set user information on the Gin context for downstream handlers
 		//    Controllers can access these with c.Get("userID"), c.Get("username"), etc.
 		c.Set("userID", claims.UserID())
+		// The session id is what logout revokes. It is an opaque random
+		// identifier, not the token, so putting it on the context does
+		// not spread the credential.
+		c.Set("sessionID", claims.SessionID())
 		c.Set("username", claims.Username)
 		c.Set("role", claims.Role)
 
-		// 4. Continue to the next handler in the chain
+		// 5. Continue to the next handler in the chain
 		c.Next()
 	}
 }

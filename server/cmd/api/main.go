@@ -25,6 +25,7 @@ import (
 	"github.com/toji339/online-judge/internal/ratelimit"
 	"github.com/toji339/online-judge/internal/realtime"
 	"github.com/toji339/online-judge/internal/routes"
+	"github.com/toji339/online-judge/internal/session"
 )
 
 // setGinMode puts Gin in release mode unless this is explicitly a
@@ -116,7 +117,21 @@ func main() {
 	//    The queue stays optional: when publishing fails and this process
 	//    can reach Docker, the submission is judged inline instead of being
 	//    refused, which keeps local development working with no extra setup.
+	// Session revocation state. Mongo rather than Redis: Redis is
+	// optional in this deployment and a revocation store that vanishes
+	// with an optional dependency is not a revocation store. The records
+	// carry a TTL index so they expire with the tokens they revoke, which
+	// is what keeps this from becoming an unbounded denylist.
+	sessions := session.NewMongoStore(db)
+	if err := sessions.EnsureIndexes(context.Background()); err != nil {
+		// Non-fatal for the same reason the other index builds are: a
+		// missing TTL index means revocations accumulate, not that
+		// authentication breaks.
+		log.Printf("WARNING: could not create the session revocation TTL index: %v", err)
+	}
+
 	var deps routes.Deps
+	deps.Sessions = sessions
 	broker := rabbitmq.New(cfg.RabbitMQURL)
 	defer broker.Close()
 	deps.Publisher = broker

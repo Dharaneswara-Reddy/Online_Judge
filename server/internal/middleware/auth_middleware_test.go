@@ -68,7 +68,7 @@ func runWithToken(t *testing.T, guard gin.HandlerFunc, token string) (*httptest.
 
 // TestAuthMiddleware_AcceptsAWellFormedToken is the happy path.
 func TestAuthMiddleware_AcceptsAWellFormedToken(t *testing.T) {
-	guard := middleware.AuthMiddleware(testSecret)
+	guard := middleware.AuthMiddleware(testSecret, nil)
 
 	w, seen := runWithToken(t, guard, signHS256(t, validClaims()))
 
@@ -80,7 +80,7 @@ func TestAuthMiddleware_AcceptsAWellFormedToken(t *testing.T) {
 
 // TestAuthMiddleware_RejectsAMissingCookie covers the anonymous caller.
 func TestAuthMiddleware_RejectsAMissingCookie(t *testing.T) {
-	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret), "")
+	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret, nil), "")
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
@@ -93,7 +93,7 @@ func TestAuthMiddleware_RejectsTheNoneAlgorithm(t *testing.T) {
 		SignedString(jwt.UnsafeAllowNoneSignatureType)
 	require.NoError(t, err)
 
-	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret), forged)
+	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret, nil), forged)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code,
 		"an unsigned token must never authenticate anybody")
@@ -109,7 +109,7 @@ func TestAuthMiddleware_RejectsAnotherHMACAlgorithm(t *testing.T) {
 		SignedString([]byte(testSecret))
 	require.NoError(t, err)
 
-	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret), other)
+	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret, nil), other)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
@@ -121,7 +121,7 @@ func TestAuthMiddleware_RejectsAForeignSignature(t *testing.T) {
 		SignedString([]byte("a-completely-different-signing-key-value"))
 	require.NoError(t, err)
 
-	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret), forged)
+	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret, nil), forged)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
@@ -133,7 +133,7 @@ func TestAuthMiddleware_RejectsAnExpiredToken(t *testing.T) {
 	claims["iat"] = time.Now().Add(-48 * time.Hour).Unix()
 	claims["exp"] = time.Now().Add(-time.Hour).Unix()
 
-	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret), signHS256(t, claims))
+	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret, nil), signHS256(t, claims))
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
@@ -145,7 +145,7 @@ func TestAuthMiddleware_RejectsATokenWithNoExpiry(t *testing.T) {
 	claims := validClaims()
 	delete(claims, "exp")
 
-	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret), signHS256(t, claims))
+	w, _ := runWithToken(t, middleware.AuthMiddleware(testSecret, nil), signHS256(t, claims))
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code,
 		"a token with no exp would outlive every incident response")
@@ -163,7 +163,7 @@ func TestAuthMiddleware_RejectsMissingClaimsWithoutPanicking(t *testing.T) {
 
 			var w *httptest.ResponseRecorder
 			require.NotPanics(t, func() {
-				w, _ = runWithToken(t, middleware.AuthMiddleware(testSecret), signHS256(t, claims))
+				w, _ = runWithToken(t, middleware.AuthMiddleware(testSecret, nil), signHS256(t, claims))
 			})
 			assert.Equal(t, http.StatusUnauthorized, w.Code)
 		})
@@ -178,7 +178,7 @@ func TestAuthMiddleware_RejectsWronglyTypedClaims(t *testing.T) {
 
 	var w *httptest.ResponseRecorder
 	require.NotPanics(t, func() {
-		w, _ = runWithToken(t, middleware.AuthMiddleware(testSecret), signHS256(t, claims))
+		w, _ = runWithToken(t, middleware.AuthMiddleware(testSecret, nil), signHS256(t, claims))
 	})
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }

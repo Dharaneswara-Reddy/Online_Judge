@@ -24,7 +24,7 @@ func setupRouter() *gin.Engine {
 	router := gin.New()
 
 	// Create the auth controller with the test database and a test JWT secret
-	authController := controllers.NewAuthController(testDB, "test-jwt-secret-key-for-testing", false)
+	authController := controllers.NewAuthController(testDB, "test-jwt-secret-key-for-testing", false, nil)
 
 	// Mount routes exactly as they will be in production
 	auth := router.Group("/api/auth")
@@ -35,7 +35,7 @@ func setupRouter() *gin.Engine {
 
 		// Protected route — requires auth middleware
 		protected := auth.Group("")
-		protected.Use(middleware.AuthMiddleware("test-jwt-secret-key-for-testing"))
+		protected.Use(middleware.AuthMiddleware("test-jwt-secret-key-for-testing", nil))
 		{
 			protected.GET("/me", authController.GetMe)
 		}

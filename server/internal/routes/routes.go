@@ -25,6 +25,7 @@ import (
 	"github.com/toji339/online-judge/internal/queue"
 	"github.com/toji339/online-judge/internal/ratelimit"
 	"github.com/toji339/online-judge/internal/realtime"
+	"github.com/toji339/online-judge/internal/session"
 	"github.com/toji339/online-judge/internal/submission"
 	submissionmongo "github.com/toji339/online-judge/internal/submission/mongorepo"
 	"github.com/toji339/online-judge/internal/warroom"
@@ -56,6 +57,11 @@ type Deps struct {
 	// when this process cannot reach Docker itself; with neither, the
 	// playground is disabled and everything else still works.
 	Caller queue.Caller
+
+	// Sessions holds revocation state, so logout and "log out everywhere"
+	// can end a token that is still signed and unexpired. Nil means
+	// revocation is not configured and authentication behaves as before.
+	Sessions session.Store
 
 	// BrokerProbe reports whether the queue is reachable, for readiness.
 	// It is separate from Publisher because readiness must never publish,
@@ -142,7 +148,7 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	warRoomSvc := warroom.NewService(warroommongo.New(db), problemSvc)
 
 	// 4. Mount the auth routes
-	authController := controllers.NewAuthController(db, cfg.JWTSecret, cfg.SecureCookies)
+	authController := controllers.NewAuthController(db, cfg.JWTSecret, cfg.SecureCookies, deps.Sessions)
 	auth := router.Group("/api/auth")
 	{
 		// Keyed by address, not by user: there is no authenticated user
@@ -164,7 +170,7 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 
 		// Protected group — all routes below require authentication
 		protected := auth.Group("")
-		protected.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+		protected.Use(middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions))
 		{
 			protected.GET("/me", authController.GetMe)
 		}
@@ -204,7 +210,7 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 		// throttle of its own — submissions get theirs from per-user
 		// admission control, but the playground bypasses that.
 		judgeGroup.Use(
-			middleware.AuthMiddleware(cfg.JWTSecret),
+			middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions),
 			middleware.RateLimit(deps.Limiter, "judge-run", 20, time.Minute),
 		)
 		{
@@ -230,7 +236,7 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	// cannot register both /api/problems/:slug and /api/problems/:id
 	// because two different wildcard names cannot share a position.
 	adminProblems := router.Group("/api/admin/problems")
-	adminProblems.Use(middleware.AuthMiddleware(cfg.JWTSecret), middleware.AdminOnly())
+	adminProblems.Use(middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions), middleware.AdminOnly())
 	{
 		adminProblems.POST("", problemController.CreateProblem)
 		adminProblems.PUT("/:id", problemController.UpdateProblem)
@@ -251,13 +257,13 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	submissionController := controllers.NewSubmissionController(problemSvc, submissionSvc, deps.Publisher, inlineProcessor, warRoomSvc)
 
 	submitGroup := router.Group("/api/problems")
-	submitGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	submitGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions))
 	{
 		submitGroup.POST("/:slug/submit", submissionController.Submit)
 	}
 
 	submissions := router.Group("/api/submissions")
-	submissions.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	submissions.Use(middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions))
 	{
 		submissions.GET("/:id", submissionController.GetSubmission)
 	}
@@ -265,7 +271,7 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	// 8. Mount profile routes
 	userController := controllers.NewUserController(db, submissionSvc, problemSvc)
 	users := router.Group("/api/users")
-	users.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	users.Use(middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions))
 	{
 		users.GET("/me", userController.GetProfile)
 		users.PATCH("/me", userController.UpdateProfile)
@@ -278,7 +284,7 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	warRoomController := controllers.NewWarRoomController(warRoomSvc, deps.Bus, cfg.ClientURL)
 
 	warRooms := router.Group("/api/warrooms")
-	warRooms.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	warRooms.Use(middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions))
 	{
 		warRooms.GET("", warRoomController.ListRooms)
 		warRooms.GET("/mine", warRoomController.ListMyRooms)
@@ -290,7 +296,7 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 		warRooms.POST("/:code/submit", submissionController.SubmitToWarRoom)
 	}
 
-	router.GET("/ws/warroom/:code", middleware.AuthMiddleware(cfg.JWTSecret), warRoomController.Live)
+	router.GET("/ws/warroom/:code", middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions), warRoomController.Live)
 
 	// 10. Mount discussion routes. Reading is public; writing needs an
 	//     account and is rate limited, which is the spam control the
@@ -304,7 +310,7 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 		middleware.OptionalAuth(cfg.JWTSecret), discussionController.ListForProblem)
 
 	discussionWrites := router.Group("/api")
-	discussionWrites.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	discussionWrites.Use(middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions))
 	{
 		discussionWrites.POST("/problems/:slug/discussions",
 			middleware.RateLimit(deps.Limiter, "discussion-post", 5, time.Minute),
@@ -329,7 +335,7 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	}
 
 	tagWrites := router.Group("/api/problems")
-	tagWrites.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	tagWrites.Use(middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions))
 	{
 		tagWrites.POST("/:slug/company-tags",
 			middleware.RateLimit(deps.Limiter, "company-tag", 10, time.Minute),

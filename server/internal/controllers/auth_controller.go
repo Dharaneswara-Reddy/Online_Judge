@@ -10,6 +10,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/toji339/online-judge/internal/models"
+	"github.com/toji339/online-judge/internal/session"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -35,16 +37,21 @@ type AuthController struct {
 	// rather than a constant so local development over plain HTTP still
 	// works, while deployments default to the safe setting.
 	secureCookies bool
+
+	// sessions records revoked sessions. Nil means revocation is not
+	// configured; logout then only clears the cookie, as it used to.
+	sessions session.Revoker
 }
 
 // NewAuthController creates a new AuthController with the given
 // database and JWT secret. This is called once at startup and
 // the controller is then passed to the route setup.
-func NewAuthController(db *mongo.Database, jwtSecret string, secureCookies bool) *AuthController {
+func NewAuthController(db *mongo.Database, jwtSecret string, secureCookies bool, sessions session.Revoker) *AuthController {
 	return &AuthController{
 		db:            db,
 		jwtSecret:     jwtSecret,
 		secureCookies: secureCookies,
+		sessions:      sessions,
 	}
 }
 
@@ -68,6 +75,11 @@ func (ac *AuthController) setSessionCookie(c *gin.Context, token string, maxAge 
 // emailRegex is a simple regex pattern for validating email format.
 // It checks for the basic structure: something@something.something
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+
+// sessionTTL is how long a session token is valid, and therefore how
+// long a revocation record for it has to survive. The two must agree: a
+// revocation that expires first would let a still-valid token back in.
+const sessionTTL = 24 * time.Hour
 
 // Password bounds.
 //
@@ -317,11 +329,34 @@ func (ac *AuthController) Logout(c *gin.Context) {
 	// Steps to follow while logging out a user
 	// ==========================================
 
-	// 1. Clear the JWT cookie by setting MaxAge to -1
+	// 1. Revoke the session this request presented.
+	//
+	//    Clearing the cookie only asks the browser to forget the token.
+	//    Anyone who copied it — from a shared machine, a proxy log, a
+	//    stolen backup — could keep using it until it expired. Recording
+	//    the revocation is what actually ends the session.
+	//
+	//    The record expires with the token, so this cannot grow without
+	//    bound: a revocation for a token that has already expired
+	//    protects nothing.
+	if ac.sessions != nil {
+		if sid, ok := c.Get("sessionID"); ok {
+			if s, _ := sid.(string); s != "" {
+				expiry := time.Now().Add(sessionTTL)
+				if err := ac.sessions.RevokeSession(c.Request.Context(), s, expiry); err != nil {
+					// The cookie is still cleared, so the ordinary case
+					// still logs out. The token itself is never logged.
+					log.Printf("auth: could not revoke session on logout: %v", err)
+				}
+			}
+		}
+	}
+
+	// 2. Clear the JWT cookie by setting MaxAge to -1
 	//    This tells the browser to delete the cookie immediately
 	ac.setSessionCookie(c, "", -1)
 
-	// 2. Send a success response
+	// 3. Send a success response
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Logged out successfully",
@@ -385,12 +420,22 @@ func (ac *AuthController) GetMe(c *gin.Context) {
 // and expires after 24 hours.
 func (ac *AuthController) generateJWT(user *models.User) (string, error) {
 	// Define the claims for the token
+	// Every token carries its own session id. Without one, a token can
+	// only be distinguished by its bytes, so "end this session" has
+	// nothing to name — which is why logout used to clear the cookie and
+	// leave the credential itself valid for the rest of its 24 hours.
+	sessionID, err := session.NewSessionID()
+	if err != nil {
+		return "", fmt.Errorf("generate session id: %w", err)
+	}
+
 	claims := jwt.MapClaims{
-		"sub":      user.ID.Hex(),                         // Subject — the user's MongoDB ObjectID
-		"username": user.Username,                         // Username for quick access without DB lookup
-		"role":     user.Role,                             // Role for authorization checks
-		"exp":      time.Now().Add(24 * time.Hour).Unix(), // Expires in 24 hours
-		"iat":      time.Now().Unix(),                     // Issued at
+		"sub":      user.ID.Hex(),                     // Subject — the user's MongoDB ObjectID
+		"username": user.Username,                     // Username for quick access without DB lookup
+		"role":     user.Role,                         // Role for authorization checks
+		"jti":      sessionID,                         // Session id — what revocation names
+		"exp":      time.Now().Add(sessionTTL).Unix(), // Expires in 24 hours
+		"iat":      time.Now().Unix(),                 // Issued at
 	}
 
 	// Create and sign the token with the JWT secret

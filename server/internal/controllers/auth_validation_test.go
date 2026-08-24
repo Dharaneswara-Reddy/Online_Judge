@@ -116,7 +116,7 @@ func TestRegister_LongPasswordIsRejectedBeforeTheDatabase(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
-	router.POST("/register", NewAuthController(nil, "test-secret", false).Register)
+	router.POST("/register", NewAuthController(nil, "test-secret", false, nil).Register)
 
 	body, err := json.Marshal(map[string]string{
 		"full_name": "Ada Lovelace",
