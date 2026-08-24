@@ -133,3 +133,36 @@ func TestAuth_ConcurrentRequestsAreSafe(t *testing.T) {
 		assert.Equal(t, http.StatusUnauthorized, got[1])
 	}
 }
+
+// Logout is not behind AuthMiddleware, so it has to identify the session
+// from the cookie itself. Without this the revocation code could never
+// fire: the context is empty when no middleware ran, and logout appeared
+// to succeed while leaving the token fully usable.
+func TestSessionIDFromToken_ReadsAValidToken(t *testing.T) {
+	tok := issue(t, "user-1", "sess-42", time.Now())
+	got, ok := middleware.SessionIDFromToken(tok, revSecret)
+	assert.True(t, ok)
+	assert.Equal(t, "sess-42", got)
+}
+
+// Signing out with an expired token must still name the session, or a
+// user whose token lapsed could never clear it.
+func TestSessionIDFromToken_ToleratesAnExpiredToken(t *testing.T) {
+	tok := issue(t, "user-1", "sess-old", time.Now().Add(-48*time.Hour))
+	got, ok := middleware.SessionIDFromToken(tok, revSecret)
+	assert.True(t, ok, "an expired token still identifies its own session")
+	assert.Equal(t, "sess-old", got)
+}
+
+// A forged or foreign token must not let a caller revoke someone else's
+// session — the signature is still checked.
+func TestSessionIDFromToken_RejectsAForeignSignature(t *testing.T) {
+	tok := issue(t, "user-1", "sess-1", time.Now())
+	_, ok := middleware.SessionIDFromToken(tok, "a-completely-different-signing-key-value")
+	assert.False(t, ok, "a token we did not sign must not name a revocable session")
+}
+
+func TestSessionIDFromToken_RejectsGarbage(t *testing.T) {
+	_, ok := middleware.SessionIDFromToken("not-a-token", revSecret)
+	assert.False(t, ok)
+}

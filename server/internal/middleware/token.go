@@ -103,3 +103,32 @@ func parseSessionToken(tokenString, jwtSecret string) (sessionClaims, error) {
 
 	return claims, nil
 }
+
+// SessionIDFromToken extracts the session id from a token without
+// requiring the caller to be authenticated.
+//
+// Logout needs this. It is deliberately not behind AuthMiddleware: a user
+// whose token has expired, or who is signing out of an already-ended
+// session, must still be able to clear their cookie rather than be met
+// with a 401. But it still has to name the session in order to revoke it,
+// and the context is empty when no middleware ran.
+//
+// The signature is verified, so a caller cannot revoke a session they do
+// not hold a token for. Expiry is deliberately tolerated: revoking an
+// already-expired token is harmless, and refusing would leave the caller
+// unable to end a session they legitimately own.
+func SessionIDFromToken(tokenString, jwtSecret string) (string, bool) {
+	if claims, err := parseSessionToken(tokenString, jwtSecret); err == nil {
+		return claims.SessionID(), claims.SessionID() != ""
+	}
+
+	var expired sessionClaims
+	if _, err := jwt.ParseWithClaims(tokenString, &expired,
+		func(t *jwt.Token) (any, error) { return []byte(jwtSecret), nil },
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithoutClaimsValidation(),
+	); err != nil {
+		return "", false
+	}
+	return expired.SessionID(), expired.SessionID() != ""
+}

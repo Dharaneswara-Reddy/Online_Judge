@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/toji339/online-judge/internal/middleware"
 	"github.com/toji339/online-judge/internal/models"
 	"github.com/toji339/online-judge/internal/session"
 
@@ -340,8 +341,25 @@ func (ac *AuthController) Logout(c *gin.Context) {
 	//    bound: a revocation for a token that has already expired
 	//    protects nothing.
 	if ac.sessions != nil {
-		if sid, ok := c.Get("sessionID"); ok {
-			if s, _ := sid.(string); s != "" {
+		// The session id normally comes from the auth middleware, but
+		// logout is deliberately not behind it: someone whose token has
+		// expired must still be able to clear their cookie rather than be
+		// met with a 401. When no middleware ran, the cookie is parsed
+		// here instead — the signature is still verified, so a caller
+		// cannot end a session they do not hold a token for.
+		sessionID := ""
+		if v, ok := c.Get("sessionID"); ok {
+			sessionID, _ = v.(string)
+		}
+		if sessionID == "" {
+			if cookie, err := c.Cookie("token"); err == nil {
+				if sid, ok := middleware.SessionIDFromToken(cookie, ac.jwtSecret); ok {
+					sessionID = sid
+				}
+			}
+		}
+		{
+			if s := sessionID; s != "" {
 				expiry := time.Now().Add(sessionTTL)
 				if err := ac.sessions.RevokeSession(c.Request.Context(), s, expiry); err != nil {
 					// The cookie is still cleared, so the ordinary case
