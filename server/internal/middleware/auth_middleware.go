@@ -8,7 +8,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // AuthMiddleware returns a Gin middleware function that validates
@@ -20,6 +19,9 @@ import (
 // If the token is valid, the middleware extracts the user claims
 // (userID, username, role) and sets them on the Gin context so
 // downstream handlers can access them via c.Get("userID"), etc.
+//
+// The token itself is never logged or echoed back. It is a bearer
+// credential, so a copy of it in a log line is a copy of the account.
 func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Steps to follow while validating the auth token
@@ -36,16 +38,12 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 			return
 		}
 
-		// 2. Parse and validate the JWT token using the secret key
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			// Ensure the signing method is HMAC (HS256)
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, jwt.ErrSignatureInvalid
-			}
-			return []byte(jwtSecret), nil
-		})
-
-		if err != nil || !token.Valid {
+		// 2. Verify the signature and decode the claims. The parser pins
+		//    the algorithm, requires an expiry, and decodes into typed
+		//    fields so no claim needs an unchecked type assertion — see
+		//    parseSessionToken for why each of those matters.
+		claims, err := parseSessionToken(tokenString, jwtSecret)
+		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
 				"message": "Invalid or expired token",
@@ -54,24 +52,13 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 			return
 		}
 
-		// 3. Extract claims from the validated token
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"message": "Invalid token claims",
-			})
-			c.Abort()
-			return
-		}
-
-		// 4. Set user information on the Gin context for downstream handlers
+		// 3. Set user information on the Gin context for downstream handlers
 		//    Controllers can access these with c.Get("userID"), c.Get("username"), etc.
-		c.Set("userID", claims["sub"].(string))
-		c.Set("username", claims["username"].(string))
-		c.Set("role", claims["role"].(string))
+		c.Set("userID", claims.UserID())
+		c.Set("username", claims.Username)
+		c.Set("role", claims.Role)
 
-		// 5. Continue to the next handler in the chain
+		// 4. Continue to the next handler in the chain
 		c.Next()
 	}
 }

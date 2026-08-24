@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // OptionalAuth identifies the caller when they are signed in, and lets
@@ -13,6 +12,13 @@ import (
 // or a company tag widget that stops asking a question you answered.
 // Anything that must reject anonymous callers uses AuthMiddleware
 // instead; this one never rejects anybody.
+//
+// "Never rejects" is not the same as "believes anything". It verifies
+// the token exactly as strictly as AuthMiddleware does — same pinned
+// algorithm, same mandatory expiry, same typed claims — and simply
+// treats a failure as anonymous rather than as an error. A token this
+// middleware accepted wrongly would let an attacker render a page as
+// somebody else.
 func OptionalAuth(jwtSecret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Steps to follow while optionally identifying a caller
@@ -25,38 +31,19 @@ func OptionalAuth(jwtSecret string) gin.HandlerFunc {
 			return
 		}
 
-		// 2. Parse the token. An invalid one is treated as anonymous
+		// 2. Verify the token. An invalid one is treated as anonymous
 		//    rather than an error, since this route does not need auth.
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, jwt.ErrSignatureInvalid
-			}
-			return []byte(jwtSecret), nil
-		})
-		if err != nil || !token.Valid {
+		claims, err := parseSessionToken(tokenString, jwtSecret)
+		if err != nil {
 			c.Next()
 			return
 		}
 
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			c.Next()
-			return
-		}
-
-		// 3. Publish whichever claims are present and well-typed
-		setStringClaim(c, "userID", claims["sub"])
-		setStringClaim(c, "username", claims["username"])
-		setStringClaim(c, "role", claims["role"])
+		// 3. Publish the identity for the handler to use
+		c.Set("userID", claims.UserID())
+		c.Set("username", claims.Username)
+		c.Set("role", claims.Role)
 
 		c.Next()
-	}
-}
-
-// setStringClaim stores a claim only when it really is a string, so a
-// malformed token cannot panic the request.
-func setStringClaim(c *gin.Context, key string, value any) {
-	if s, ok := value.(string); ok && s != "" {
-		c.Set(key, s)
 	}
 }
