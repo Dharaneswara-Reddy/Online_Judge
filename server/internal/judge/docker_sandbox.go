@@ -263,7 +263,7 @@ func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin 
 		// submissions having a 3 second margin against the compile timeout
 		// and having a comfortable one. The directory is read-only, which
 		// is the point — one submission cannot poison another's build.
-		Env: []string{"GOCACHE=/opt/gocache", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin"},
+		Env: []string{"GOCACHE=/tmp/gocache", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin"},
 		// stdin is attached unconditionally, even when there is nothing to
 		// send. Attaching only for non-empty input made a test case with
 		// empty input a different shape of execution from every other one:
