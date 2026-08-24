@@ -22,15 +22,37 @@ type FakeRepository struct {
 	// is how a test asserts what the database would actually have been
 	// asked for.
 	lastFilter problem.ListFilter
+
+	// BeforeCreate runs at the start of Create, before the slug is
+	// checked. It is how a test opens the window between the service
+	// picking a free slug and the insert landing — the window a
+	// concurrent request slips through in production. Set it to nil from
+	// inside the hook to make it fire only once.
+	BeforeCreate func(*problem.Problem)
 }
 
 func NewFakeRepository() *FakeRepository {
 	return &FakeRepository{nextID: 1}
 }
 
+// Create stores a problem, refusing a slug another problem already
+// holds.
+//
+// The uniqueness check mirrors the unique index on "slug" in the real
+// collection. Without it the fake would accept two identical slugs and
+// let service tests pass a case production rejects.
 func (r *FakeRepository) Create(_ context.Context, p *problem.Problem) error {
+	if r.BeforeCreate != nil {
+		r.BeforeCreate(p)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for _, existing := range r.problems {
+		if existing.Slug == p.Slug {
+			return problem.ErrSlugConflict
+		}
+	}
 	p.ID = fmt.Sprintf("fake-%d", r.nextID)
 	r.nextID++
 	r.problems = append(r.problems, *p)

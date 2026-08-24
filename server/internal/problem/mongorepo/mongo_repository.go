@@ -29,13 +29,68 @@ func New(db *mongo.Database) *MongoRepository {
 	}
 }
 
+// Create inserts one problem, letting the unique index on "slug" decide
+// whether the slug was really free.
+//
+// The service picks a slug by reading the collection first, but that
+// read and this insert are separate operations: two concurrent creates
+// of the same title both see the slug unused and both arrive here. The
+// index admits exactly one of them. The rejection is translated into
+// problem.ErrSlugConflict so the loser is a documented 409 rather than
+// an opaque 500 — and because the insert either applied or did not, a
+// caller told it failed leaves no row behind.
 func (r *MongoRepository) Create(ctx context.Context, p *problem.Problem) error {
 	result, err := r.problems.InsertOne(ctx, p)
 	if err != nil {
+		if duplicateKeyIncludes(err, "slug") {
+			return problem.ErrSlugConflict
+		}
 		return fmt.Errorf("insert problem: %w", err)
 	}
 	p.ID = result.InsertedID.(bson.ObjectID).Hex()
 	return nil
+}
+
+// duplicateKeyIncludes reports whether err is a duplicate-key error
+// raised by an index whose key includes the named field.
+//
+// The field is checked rather than trusting mongo.IsDuplicateKeyError on
+// its own: "some unique index rejected this" and "the slug is taken" are
+// different facts, and a future unique index on this collection would
+// otherwise start reporting itself as a slug conflict.
+//
+// The server names the offending index's keys in keyPattern, which
+// arrives on the write error's Raw document — its Details field carries
+// only the server's errInfo, which a duplicate key does not populate.
+// Both are read anyway so this does not depend on which one a given
+// server version fills in. When neither names a key the answer is no,
+// which keeps an unrecognised failure on the loud path rather than
+// disguising it as a routine conflict.
+func duplicateKeyIncludes(err error, field string) bool {
+	if !mongo.IsDuplicateKeyError(err) {
+		return false
+	}
+
+	var we mongo.WriteException
+	if !errors.As(err, &we) {
+		return false
+	}
+	for _, writeErr := range we.WriteErrors {
+		for _, raw := range []bson.Raw{writeErr.Raw, writeErr.Details} {
+			pattern, lookupErr := raw.LookupErr("keyPattern")
+			if lookupErr != nil {
+				continue
+			}
+			doc, ok := pattern.DocumentOK()
+			if !ok {
+				continue
+			}
+			if _, lookupErr := doc.LookupErr(field); lookupErr == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *MongoRepository) GetBySlug(ctx context.Context, slug string) (*problem.Problem, error) {

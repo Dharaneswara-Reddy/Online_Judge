@@ -52,6 +52,18 @@ func (pc *ProblemController) CreateProblem(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": ve.Error()})
 			return
 		}
+		// Another create claimed this slug between our slug lookup and
+		// our insert. The request was valid and simply arrived second, so
+		// it is a conflict rather than a server fault, and retrying it
+		// works — the next attempt sees the taken slug and picks the
+		// suffixed one.
+		if errors.Is(err, problem.ErrSlugConflict) {
+			c.JSON(http.StatusConflict, gin.H{
+				"success": false,
+				"message": "A problem with that title was just created. Try again.",
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to create problem"})
 		return
 	}
