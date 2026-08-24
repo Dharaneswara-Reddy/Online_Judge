@@ -225,6 +225,62 @@ Do not terminate the old instance at any point in this list.
    days. A stopped instance costs only its EBS volume and is the fastest
    possible rollback.
 
+### Rollback and HSTS
+
+**Read this before rolling back.** The site now sends
+`Strict-Transport-Security: max-age=31536000` over HTTPS. Any browser
+that has loaded the site since TLS went live will refuse to talk to
+`codearena-live.duckdns.org` over plain HTTP for a year — it upgrades the
+request itself and fails closed if TLS is unavailable. That is the header
+doing its job, and it is exactly why HSTS must not be switched off to
+make a rollback convenient: turning it off does nothing for browsers that
+already hold the pin.
+
+The consequence is concrete: **the old t3.micro serves HTTP only, so
+pointing DNS back at it strands every returning visitor.** New visitors
+would be fine; anyone who has been here since the switch would see a
+connection failure, not a warning they can click through.
+
+So a rollback that moves the hostname has one prerequisite:
+
+1. **The rollback target must serve HTTPS for the same hostname first.**
+   Obtain a certificate on the old instance *before* moving DNS. The
+   instance is deliberately untouched, so this is a manual step and needs
+   explicit authorisation:
+
+       # on 100.62.87.249, only with authorisation
+       sudo mkdir -p /etc/letsencrypt /var/www/certbot
+       # DNS must already point here for HTTP-01 to validate, so do this
+       # during a maintenance window, or use a DNS-01 challenge instead
+       sudo docker run --rm -p 80:80 \
+         -v /etc/letsencrypt:/etc/letsencrypt \
+         -v /var/lib/letsencrypt:/var/lib/letsencrypt \
+         certbot/certbot certonly --standalone \
+         -d codearena-live.duckdns.org --non-interactive --agree-tos \
+         --register-unsafely-without-email --key-type ecdsa
+
+   Then deploy the current compose file and client image there, which
+   already carry the TLS server block and the certificate mounts.
+
+2. Only then move DNS back.
+
+**The faster option, and the one to prefer:** roll back the *images*
+rather than the *host*. Every build is published under its commit SHA, so
+the current instance can be put on an older build without touching DNS,
+HSTS or certificates at all:
+
+    # in deploy/.env on 3.208.90.142
+    SERVER_IMAGE=ghcr.io/dharaneswara-reddy/codearena-server:<sha>
+    CLIENT_IMAGE=ghcr.io/dharaneswara-reddy/codearena-client:<sha>
+
+    docker compose -f docker-compose.prod.yml pull
+    docker compose -f docker-compose.prod.yml up -d --no-build
+
+That covers every failure caused by a code change, which is the large
+majority. Falling back to the old *instance* is only for losing the
+machine itself, and that is the case the certificate prerequisite above
+applies to.
+
 ### Rollback
 
 The old instance keeps its Atlas allowlist entry and its EBS volume, and
