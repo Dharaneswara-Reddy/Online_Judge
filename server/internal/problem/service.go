@@ -26,6 +26,15 @@ type CreateProblemInput struct {
 	StarterCode   map[string]string
 }
 
+// Create stores a new problem under a slug derived from its title.
+//
+// Uniqueness of the slug is enforced by the database, not here. The
+// lookup below only chooses a pleasant slug — "two-sum", then
+// "two-sum-2" for a second problem with the same title — and it cannot
+// be a guarantee, because the read and the insert are separate
+// operations and two concurrent creates both see the same slug free.
+// The unique index settles that: one insert wins and the rest come back
+// as ErrSlugConflict, which callers surface as 409.
 func (s *Service) Create(ctx context.Context, input CreateProblemInput) (*Problem, error) {
 	if err := validateProblemInput(input); err != nil {
 		return nil, err
@@ -51,6 +60,13 @@ func (s *Service) Create(ctx context.Context, input CreateProblemInput) (*Proble
 	return p, nil
 }
 
+// uniqueSlug picks the first slug not already taken, appending -2, -3
+// and so on to the base.
+//
+// It is an optimisation for readability, not a correctness mechanism.
+// Nothing holds a lock between this check and the insert, so the slug it
+// returns can be claimed by another request before Create writes; the
+// unique index is what makes that safe.
 func (s *Service) uniqueSlug(ctx context.Context, base string) (string, error) {
 	slug := base
 	for i := 2; ; i++ {
