@@ -15,3 +15,16 @@ type SubmissionSandbox interface {
 	Run(ctx context.Context, stdin string) (ExecuteResult, error)
 	Close(ctx context.Context) error
 }
+
+// MemoryReporter is implemented by sandboxes that can report how much
+// memory a submission actually used.
+//
+// It is separate from SubmissionSandbox rather than part of it because
+// not every implementation can answer: the in-memory fakes used by the
+// unit tests have no cgroup to read. A sandbox that cannot report simply
+// does not implement this, and the verdict carries no memory figure —
+// which is the honest outcome, and better than every submission claiming
+// it used zero.
+type MemoryReporter interface {
+	PeakMemoryKB(ctx context.Context) (int64, bool)
+}

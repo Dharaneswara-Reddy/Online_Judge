@@ -213,7 +213,7 @@ func (s *dockerSubmission) writeSource(ctx context.Context, sourceCode string) e
 	writeCtx, cancel := context.WithTimeout(ctx, sourceWriteTimeout)
 	defer cancel()
 
-	res, err := s.execWithCtx(writeCtx, []string{"sh", "-c", fmt.Sprintf("cat > %s", s.lang.SourceFile)}, sourceCode)
+	res, err := s.execWithCtx(writeCtx, []string{"sh", "-c", fmt.Sprintf("cat > %s", s.lang.SourceFile)}, sourceCode, phaseSetup, sourceWriteTimeout)
 	if err != nil {
 		return fmt.Errorf("write source: %w", err)
 	}
@@ -235,7 +235,7 @@ func (s *dockerSubmission) Compile(ctx context.Context) (ExecuteResult, error) {
 	compileCtx, cancel := context.WithTimeout(ctx, compileTimeout)
 	defer cancel()
 
-	return s.execWithCtx(compileCtx, s.lang.CompileCmd, "")
+	return s.execWithCtx(compileCtx, s.lang.CompileCmd, "", phaseCompile, compileTimeout)
 }
 
 // Run executes the compiled/interpreted program with the given stdin.
@@ -243,17 +243,32 @@ func (s *dockerSubmission) Run(ctx context.Context, stdin string) (ExecuteResult
 	execCtx, cancel := context.WithTimeout(ctx, s.limits.TimeLimit)
 	defer cancel()
 
-	return s.execWithCtx(execCtx, s.lang.RunCmd, stdin)
+	return s.execWithCtx(execCtx, s.lang.RunCmd, stdin, phaseRun, s.limits.TimeLimit)
+}
+
+// PeakMemoryKB reports the container's high-water memory mark.
+//
+// Reading the cgroup is the only measurement that survives the process it
+// describes: user code runs as an exec, so ContainerInspect reports on
+// `sleep infinity` instead, and `docker stats` samples an instant that has
+// usually passed by the time a run finishes.
+func (s *dockerSubmission) PeakMemoryKB(ctx context.Context) (int64, bool) {
+	readCtx, cancel := context.WithTimeout(ctx, sourceWriteTimeout)
+	defer cancel()
+
+	return peakMemoryKB(readCtx, func(c context.Context, cmd []string) (ExecuteResult, error) {
+		return s.execWithCtx(c, cmd, "", phaseSetup, sourceWriteTimeout)
+	})
 }
 
 // exec runs a command inside the container with a timeout context.
 func (s *dockerSubmission) exec(ctx context.Context, cmd []string, stdin string) (ExecuteResult, error) {
 	execCtx, cancel := context.WithTimeout(ctx, s.limits.TimeLimit)
 	defer cancel()
-	return s.execWithCtx(execCtx, cmd, stdin)
+	return s.execWithCtx(execCtx, cmd, stdin, phaseRun, s.limits.TimeLimit)
 }
 
-func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin string) (ExecuteResult, error) {
+func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin string, phase execPhase, budget time.Duration) (ExecuteResult, error) {
 	execResp, err := s.cli.ContainerExecCreate(ctx, s.containerID, types.ExecConfig{
 		Cmd: cmd,
 		// GOCACHE points at the cache baked into the image, not at a fresh
@@ -353,7 +368,7 @@ func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin 
 		return ExecuteResult{
 			TimedOut: true,
 			ExitCode: 124,
-			Stderr:   "Command execution timed out",
+			Stderr:   timeoutMessage(phase, budget),
 		}, nil
 	case cErr := <-copyDone:
 		// A read error caused by our own close is expected: the process
@@ -398,6 +413,43 @@ func (s *dockerSubmission) execWithCtx(ctx context.Context, cmd []string, stdin 
 // Close force-removes the container, releasing all resources.
 func (s *dockerSubmission) Close(ctx context.Context) error {
 	return s.cli.ContainerRemove(ctx, s.containerID, types.ContainerRemoveOptions{Force: true})
+}
+
+// execPhase names which half of a run a timeout happened in.
+//
+// The sandbox executes compilation and the program itself through the
+// same code path, so without this the two produce an identical message —
+// and under a compile_error verdict "Command execution timed out" reads
+// as though the code failed to compile, sending the author after a syntax
+// error that is not there.
+type execPhase int
+
+const (
+	phaseCompile execPhase = iota
+	phaseRun
+	// phaseSetup is copying the source into the container. A timeout here
+	// is the platform's problem, not the submitter's, and must not be
+	// worded as though their program did something wrong.
+	phaseSetup
+)
+
+// timeoutMessage describes a timeout in terms of the phase it happened
+// in, including the budget that was exceeded — "timed out" on its own
+// leaves the author guessing what they have to fit inside.
+func timeoutMessage(phase execPhase, budget time.Duration) string {
+	switch phase {
+	case phaseCompile:
+		return fmt.Sprintf(
+			"Compilation timed out after %s. The code did not finish compiling within the limit; "+
+				"this is usually heavy template or macro expansion rather than a mistake in the program.",
+			budget)
+	case phaseSetup:
+		return fmt.Sprintf(
+			"The judge could not prepare the sandbox within %s. This is an infrastructure "+
+				"failure, not a problem with the submitted code.", budget)
+	default:
+		return fmt.Sprintf("Execution timed out: the program was still running after %s.", budget)
+	}
 }
 
 // tarSingleFile creates a tar archive containing one file.

@@ -82,9 +82,24 @@ func (j *Judge) Evaluate(ctx context.Context, language, sourceCode string, testC
 		}
 	}
 
+	// Ask the sandbox what the submission actually used. Once, after the
+	// last case: the container is shared across cases, so its cgroup peak
+	// is already the maximum over the whole submission, and reading it
+	// per case would cost an exec each time for the same answer.
+	//
+	// A sandbox that cannot measure leaves this at zero and the field
+	// stays absent, rather than asserting the program used no memory.
+	var memoryKB int64
+	if reporter, ok := sub.(MemoryReporter); ok {
+		if peak, measured := reporter.PeakMemoryKB(ctx); measured {
+			memoryKB = peak
+		}
+	}
+
 	return JudgeResult{
 		Verdict:    VerdictAccepted,
 		RuntimeMS:  maxRuntime,
+		MemoryKB:   memoryKB,
 		FailedCase: -1,
 	}, nil
 }
