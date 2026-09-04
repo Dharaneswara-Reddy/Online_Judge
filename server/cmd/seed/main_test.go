@@ -28,11 +28,16 @@ type referenceSolver func(input string) (string, error)
 // unverified.
 func solvers() map[string]referenceSolver {
 	return map[string]referenceSolver{
-		"Two Sum":                    solveTwoSum,
-		"Reverse String":             solveReverseString,
-		"Valid Parentheses":          solveValidParentheses,
-		"Longest Common Subsequence": solveLCS,
-		"Merge Intervals":            solveMergeIntervals,
+		"Two Sum":                         solveTwoSum,
+		"Reverse String":                  solveReverseString,
+		"Valid Parentheses":               solveValidParentheses,
+		"Longest Common Subsequence":      solveLCS,
+		"Merge Intervals":                 solveMergeIntervals,
+		"Best Time to Buy and Sell Stock": solveBestTimeToBuySell,
+		"Maximum Subarray":                solveMaximumSubarray,
+		"Binary Search":                   solveBinarySearch,
+		"Climbing Stairs":                 solveClimbingStairs,
+		"Longest Substring Without Repeating Characters": solveLongestUniqueSubstring,
 	}
 }
 
@@ -417,3 +422,133 @@ func parseInts(fields []string) ([]int, error) {
 // validates, so a typo in a difficulty constant fails here rather than
 // at run time against the database.
 var _ = problem.DifficultyEasy
+
+// =====================================================================
+// Reference solutions for the problems added in the V2 expansion.
+//
+// These are deliberately written straight, not cleverly: the point is to
+// be obviously correct so that when a stored expected output disagrees
+// with one, the seed data is what gets doubted.
+// =====================================================================
+
+// solveBestTimeToBuySell walks the prices once, tracking the cheapest day
+// seen so far. Buying must precede selling, which is what makes pairing
+// the global minimum with the global maximum wrong.
+func solveBestTimeToBuySell(input string) (string, error) {
+	lines := strings.Split(strings.TrimSpace(input), "\n")
+	if len(lines) < 2 {
+		return "", fmt.Errorf("expected two lines, got %d", len(lines))
+	}
+	prices, err := parseInts(strings.Fields(lines[1]))
+	if err != nil {
+		return "", err
+	}
+	if len(prices) == 0 {
+		return "0", nil
+	}
+	lowest, best := prices[0], 0
+	for _, price := range prices[1:] {
+		if profit := price - lowest; profit > best {
+			best = profit
+		}
+		if price < lowest {
+			lowest = price
+		}
+	}
+	return strconv.Itoa(best), nil
+}
+
+// solveMaximumSubarray is Kadane's. The running sum starts at the first
+// element rather than zero, so an all-negative array returns its least
+// negative element instead of an empty-subarray zero.
+func solveMaximumSubarray(input string) (string, error) {
+	lines := strings.Split(strings.TrimSpace(input), "\n")
+	if len(lines) < 2 {
+		return "", fmt.Errorf("expected two lines, got %d", len(lines))
+	}
+	nums, err := parseInts(strings.Fields(lines[1]))
+	if err != nil {
+		return "", err
+	}
+	if len(nums) == 0 {
+		return "", fmt.Errorf("empty array")
+	}
+	best, running := nums[0], nums[0]
+	for _, n := range nums[1:] {
+		if running < 0 {
+			running = n
+		} else {
+			running += n
+		}
+		if running > best {
+			best = running
+		}
+	}
+	return strconv.Itoa(best), nil
+}
+
+// solveBinarySearch returns the index of target, or -1.
+func solveBinarySearch(input string) (string, error) {
+	lines := strings.Split(strings.TrimSpace(input), "\n")
+	if len(lines) < 2 {
+		return "", fmt.Errorf("expected two lines, got %d", len(lines))
+	}
+	header, err := parseInts(strings.Fields(lines[0]))
+	if err != nil || len(header) < 2 {
+		return "", fmt.Errorf("bad header %q", lines[0])
+	}
+	target := header[1]
+	nums, err := parseInts(strings.Fields(lines[1]))
+	if err != nil {
+		return "", err
+	}
+	lo, hi := 0, len(nums)-1
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		switch {
+		case nums[mid] == target:
+			return strconv.Itoa(mid), nil
+		case nums[mid] < target:
+			lo = mid + 1
+		default:
+			hi = mid - 1
+		}
+	}
+	return "-1", nil
+}
+
+// solveClimbingStairs is the Fibonacci recurrence, iterated. n is bounded
+// at 40 by the statement, which fits an int comfortably.
+func solveClimbingStairs(input string) (string, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(input))
+	if err != nil {
+		return "", err
+	}
+	if n <= 2 {
+		return strconv.Itoa(n), nil
+	}
+	prev, curr := 1, 2
+	for i := 3; i <= n; i++ {
+		prev, curr = curr, prev+curr
+	}
+	return strconv.Itoa(curr), nil
+}
+
+// solveLongestUniqueSubstring is the sliding window. The left edge jumps
+// past a repeat rather than stepping one place, which is what "dvdf"
+// distinguishes.
+func solveLongestUniqueSubstring(input string) (string, error) {
+	s := strings.TrimRight(input, "\r\n")
+	lastSeen := make(map[rune]int)
+	best, left := 0, 0
+	for i, ch := range []rune(s) {
+		if prev, seen := lastSeen[ch]; seen && prev >= left {
+			left = prev + 1
+		}
+		lastSeen[ch] = i
+		if width := i - left + 1; width > best {
+			best = width
+		}
+	}
+	return strconv.Itoa(best), nil
+}

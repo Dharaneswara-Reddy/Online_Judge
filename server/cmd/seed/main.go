@@ -437,5 +437,187 @@ Print the merged intervals sorted by start value, one per line, as "start end".`
 				{Input: "5\n9 10\n1 2\n5 6\n3 4\n7 8", ExpectedOutput: "1 2\n3 4\n5 6\n7 8\n9 10", IsSample: false},
 			},
 		},
+
+		// ——— 6. Best Time to Buy and Sell Stock ———
+		{
+			Input: problem.CreateProblemInput{
+				Title: "Best Time to Buy and Sell Stock",
+				Statement: `You are given an array prices where prices[i] is the price of a given stock on day i.
+
+You want to maximise your profit by choosing a single day to buy one stock and a different, later day to sell it.
+
+Return the maximum profit you can achieve. If no profit is possible, return 0.
+
+Input Format:
+First line: n (number of days).
+Second line: n space-separated integers, the prices.
+
+Output Format:
+A single integer, the maximum profit.`,
+				Difficulty:    problem.DifficultyEasy,
+				Tags:          []string{"arrays", "greedy", "dynamic-programming"},
+				TimeLimitMS:   2000,
+				MemoryLimitMB: 256,
+				StarterCode: map[string]string{
+					"python": "n = int(input())\nprices = list(map(int, input().split()))\n\ndef max_profit(prices):\n    # Your code here\n    return 0\n\nprint(max_profit(prices))\n",
+					"cpp":    "#include <iostream>\n#include <vector>\nusing namespace std;\n\nint main() {\n    int n;\n    cin >> n;\n    vector<int> prices(n);\n    for (int i = 0; i < n; i++) cin >> prices[i];\n    // Your code here\n    return 0;\n}\n",
+					"go":     "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tvar n int\n\tfmt.Scan(&n)\n\tprices := make([]int, n)\n\tfor i := range prices {\n\t\tfmt.Scan(&prices[i])\n\t}\n\t// Your code here\n}\n",
+					"java":   "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] prices = new int[n];\n        for (int i = 0; i < n; i++) prices[i] = sc.nextInt();\n        // Your code here\n    }\n}\n",
+				},
+			},
+			TestCases: []problem.TestCase{
+				{Input: "6\n7 1 5 3 6 4", ExpectedOutput: "5", IsSample: true},
+				{Input: "5\n7 6 4 3 1", ExpectedOutput: "0", IsSample: true},
+				{Input: "1\n5", ExpectedOutput: "0", IsSample: false},
+				// The maximum comes after the deepest dip, so a solution
+				// that pairs the global minimum with the global maximum
+				// without checking order gets this wrong.
+				{Input: "6\n3 8 1 9 2 4", ExpectedOutput: "8", IsSample: false},
+				{Input: "2\n2 4", ExpectedOutput: "2", IsSample: false},
+			},
+		},
+
+		// ——— 7. Maximum Subarray ———
+		{
+			Input: problem.CreateProblemInput{
+				Title: "Maximum Subarray",
+				Statement: `Given an integer array nums, find the contiguous subarray containing at least one number which has the largest sum, and return that sum.
+
+Input Format:
+First line: n (size of the array).
+Second line: n space-separated integers.
+
+Output Format:
+A single integer, the largest subarray sum.`,
+				Difficulty:    problem.DifficultyMedium,
+				Tags:          []string{"arrays", "dynamic-programming", "divide-and-conquer"},
+				TimeLimitMS:   2000,
+				MemoryLimitMB: 256,
+				StarterCode: map[string]string{
+					"python": "n = int(input())\nnums = list(map(int, input().split()))\n\ndef max_subarray(nums):\n    # Your code here\n    return 0\n\nprint(max_subarray(nums))\n",
+					"cpp":    "#include <iostream>\n#include <vector>\nusing namespace std;\n\nint main() {\n    int n;\n    cin >> n;\n    vector<int> nums(n);\n    for (int i = 0; i < n; i++) cin >> nums[i];\n    // Your code here\n    return 0;\n}\n",
+					"go":     "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tvar n int\n\tfmt.Scan(&n)\n\tnums := make([]int, n)\n\tfor i := range nums {\n\t\tfmt.Scan(&nums[i])\n\t}\n\t// Your code here\n}\n",
+					"java":   "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i < n; i++) nums[i] = sc.nextInt();\n        // Your code here\n    }\n}\n",
+				},
+			},
+			TestCases: []problem.TestCase{
+				{Input: "9\n-2 1 -3 4 -1 2 1 -5 4", ExpectedOutput: "6", IsSample: true},
+				{Input: "1\n1", ExpectedOutput: "1", IsSample: true},
+				// Every element negative: a solution that initialises the
+				// running best at 0 returns 0 instead of the least-bad
+				// single element.
+				{Input: "4\n-5 -2 -8 -1", ExpectedOutput: "-1", IsSample: false},
+				{Input: "5\n5 4 -1 7 8", ExpectedOutput: "23", IsSample: false},
+				{Input: "6\n-1 3 -2 5 -8 2", ExpectedOutput: "6", IsSample: false},
+			},
+		},
+
+		// ——— 8. Binary Search ———
+		{
+			Input: problem.CreateProblemInput{
+				Title: "Binary Search",
+				Statement: `Given a sorted array of distinct integers nums and an integer target, return the index of target if it is present, or -1 if it is not.
+
+Your solution must run in O(log n) time.
+
+Input Format:
+First line: n (size of the array) and target, separated by a space.
+Second line: n space-separated integers in ascending order.
+
+Output Format:
+A single integer: the 0-indexed position of target, or -1.`,
+				Difficulty:    problem.DifficultyEasy,
+				Tags:          []string{"arrays", "binary-search"},
+				TimeLimitMS:   1000,
+				MemoryLimitMB: 256,
+				StarterCode: map[string]string{
+					"python": "line1 = input().split()\nn, target = int(line1[0]), int(line1[1])\nnums = list(map(int, input().split()))\n\ndef search(nums, target):\n    # Your code here\n    return -1\n\nprint(search(nums, target))\n",
+					"cpp":    "#include <iostream>\n#include <vector>\nusing namespace std;\n\nint main() {\n    int n, target;\n    cin >> n >> target;\n    vector<int> nums(n);\n    for (int i = 0; i < n; i++) cin >> nums[i];\n    // Your code here\n    return 0;\n}\n",
+					"go":     "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tvar n, target int\n\tfmt.Scan(&n, &target)\n\tnums := make([]int, n)\n\tfor i := range nums {\n\t\tfmt.Scan(&nums[i])\n\t}\n\t// Your code here\n}\n",
+					"java":   "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt(), target = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i < n; i++) nums[i] = sc.nextInt();\n        // Your code here\n    }\n}\n",
+				},
+			},
+			TestCases: []problem.TestCase{
+				{Input: "6 9\n-1 0 3 5 9 12", ExpectedOutput: "4", IsSample: true},
+				{Input: "6 2\n-1 0 3 5 9 12", ExpectedOutput: "-1", IsSample: true},
+				{Input: "1 5\n5", ExpectedOutput: "0", IsSample: false},
+				// First and last positions: an off-by-one in the loop
+				// bounds misses exactly these.
+				{Input: "5 1\n1 2 3 4 5", ExpectedOutput: "0", IsSample: false},
+				{Input: "5 5\n1 2 3 4 5", ExpectedOutput: "4", IsSample: false},
+			},
+		},
+
+		// ——— 9. Climbing Stairs ———
+		{
+			Input: problem.CreateProblemInput{
+				Title: "Climbing Stairs",
+				Statement: `You are climbing a staircase that takes n steps to reach the top.
+
+Each time you can climb either 1 or 2 steps. In how many distinct ways can you reach the top?
+
+Input Format:
+A single line containing the integer n (1 <= n <= 40).
+
+Output Format:
+A single integer, the number of distinct ways.`,
+				Difficulty:    problem.DifficultyEasy,
+				Tags:          []string{"dynamic-programming", "recursion", "math"},
+				TimeLimitMS:   2000,
+				MemoryLimitMB: 256,
+				StarterCode: map[string]string{
+					"python": "n = int(input())\n\ndef climb_stairs(n):\n    # Your code here\n    return 0\n\nprint(climb_stairs(n))\n",
+					"cpp":    "#include <iostream>\nusing namespace std;\n\nint main() {\n    int n;\n    cin >> n;\n    // Your code here\n    return 0;\n}\n",
+					"go":     "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tvar n int\n\tfmt.Scan(&n)\n\t// Your code here\n}\n",
+					"java":   "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        // Your code here\n    }\n}\n",
+				},
+			},
+			TestCases: []problem.TestCase{
+				{Input: "2", ExpectedOutput: "2", IsSample: true},
+				{Input: "3", ExpectedOutput: "3", IsSample: true},
+				{Input: "1", ExpectedOutput: "1", IsSample: false},
+				// n = 40 is inside the stated bound and takes about a
+				// billion calls without memoisation, so naive recursion
+				// times out here rather than passing quietly.
+				{Input: "40", ExpectedOutput: "165580141", IsSample: false},
+				{Input: "10", ExpectedOutput: "89", IsSample: false},
+			},
+		},
+
+		// ——— 10. Longest Substring Without Repeating Characters ———
+		{
+			Input: problem.CreateProblemInput{
+				Title: "Longest Substring Without Repeating Characters",
+				Statement: `Given a string s, find the length of the longest substring that contains no repeated characters.
+
+A substring is a contiguous run of characters; "abc" is a substring of "abcde" but "ace" is not.
+
+Input Format:
+A single line containing the string s. It may contain spaces, letters, digits and symbols.
+
+Output Format:
+A single integer, the length of the longest substring without repeating characters.`,
+				Difficulty:    problem.DifficultyMedium,
+				Tags:          []string{"strings", "sliding-window", "hash-table"},
+				TimeLimitMS:   2000,
+				MemoryLimitMB: 256,
+				StarterCode: map[string]string{
+					"python": "s = input()\n\ndef length_of_longest_substring(s):\n    # Your code here\n    return 0\n\nprint(length_of_longest_substring(s))\n",
+					"cpp":    "#include <iostream>\n#include <string>\nusing namespace std;\n\nint main() {\n    string s;\n    getline(cin, s);\n    // Your code here\n    return 0;\n}\n",
+					"go":     "package main\n\nimport (\n\t\"bufio\"\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc main() {\n\tscanner := bufio.NewScanner(os.Stdin)\n\tscanner.Scan()\n\ts := scanner.Text()\n\t// Your code here\n\t_ = s\n\tfmt.Println(0)\n}\n",
+					"java":   "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        String s = sc.hasNextLine() ? sc.nextLine() : \"\";\n        // Your code here\n    }\n}\n",
+				},
+			},
+			TestCases: []problem.TestCase{
+				{Input: "abcabcbb", ExpectedOutput: "3", IsSample: true},
+				{Input: "bbbbb", ExpectedOutput: "1", IsSample: true},
+				{Input: "pwwkew", ExpectedOutput: "3", IsSample: false},
+				// A space is a character like any other, and the window
+				// has to jump past the repeat rather than step one place:
+				// the answer here is the trailing " abcd".
+				{Input: "abc abcd", ExpectedOutput: "5", IsSample: false},
+				{Input: "dvdf", ExpectedOutput: "3", IsSample: false},
+			},
+		},
 	}
 }
