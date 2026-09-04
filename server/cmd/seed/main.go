@@ -38,10 +38,29 @@ func main() {
 	// test cases and writes the seed set in their place.
 	forceTestCases := flag.Bool("force-testcases", false,
 		"Replace the stored test cases of seeded problems whose data differs from the seed set (destructive)")
+	// Off by default, and the only way to write to anything that is not a
+	// local database. See target.go for why it exists.
+	allowProduction := flag.Bool("allow-production", false,
+		"Authorise seeding a non-local database. Required for production; never implied")
 	flag.Parse()
 
 	_ = godotenv.Load()
 	cfg := config.Load()
+
+	// Say where this is pointed before touching anything. The seeder once
+	// wrote to production because the working directory decided which
+	// .env it read and nobody could see that from the command line.
+	target, classifyErr := classifyTarget(cfg.MongoURI, cfg.DBName)
+	log.Printf("Seed target: %s", target.Describe())
+	if classifyErr != nil {
+		log.Printf("WARNING: %v", classifyErr)
+	}
+	if err := guardTarget(target, *allowProduction); err != nil {
+		log.Fatalf("FATAL: %v", err)
+	}
+	if target.Env != EnvLocal {
+		log.Printf("WARNING: writing to a %s database because --allow-production was given", target.Env)
+	}
 
 	client, err := database.Connect(cfg.MongoURI)
 	if err != nil {
