@@ -30,10 +30,11 @@ API  ──  controllers/assist_controller.go   ── who is asking, is it thei
 internal/assist  ── prompts, disclosure budget, output filters
    │
    ▼
-Anthropic Messages API                      ── the only outbound call
+Groq (or any OpenAI-compatible host)        ── the only outbound call
 ```
 
-Inference is an external HTTP call and nothing else. It does not run on the
+Inference is an external HTTP call and nothing else — by default to Groq,
+which serves open-weight models over an OpenAI-compatible endpoint at no cost. It does not run on the
 judge host: production is a 2 vCPU / 2 GiB box with both cores committed to
 sandboxes under a hard ceiling, and the same reasoning that keeps the Docker
 socket away from the API applies here — a model call is something slow and
@@ -174,13 +175,41 @@ optional here.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | *(unset)* | Unset disables the assistant entirely |
-| `ASSIST_ENABLED` | `true` | Kill switch, independent of the key |
-| `ASSIST_MODEL` | `claude-sonnet-5` | Model used for every assist call |
+| `GROQ_API_KEY` | *(unset)* | The intended provider. Unset with no fallback disables the assistant |
+| `ANTHROPIC_API_KEY` | *(unset)* | Fallback, consulted only when there is no Groq key |
+| `ASSIST_BASE_URL` | *(unset)* | Any other OpenAI-compatible endpoint |
+| `ASSIST_ENABLED` | `true` | Kill switch, independent of every key |
+| `ASSIST_MODEL` | `llama-3.3-70b-versatile` | Model used for every assist call |
+
+**Groq is the intended provider, and it wins when both keys are set.** A judge
+running on a free-tier host cannot carry a per-hint bill, and that is the whole
+reason the feature can be left switched on. A deployment holding both
+credentials must not quietly start billing the metered one, so the order is
+tested rather than assumed — and the two APIs speak different dialects, so the
+wrong branch would not fail loudly either: the OpenAI dialect carries the
+system prompt as a message with a role, the Anthropic one as a top-level field,
+and sending it the wrong way drops every instruction in it while the endpoint
+keeps answering 200.
+
+`ASSIST_MODEL` matters more than its default does. Identifiers on a free tier
+are retired and renamed regularly, so treat the constant in the code as a
+starting point and the environment variable as the real setting.
 
 Two separate settings can leave the feature off, and they are logged
 differently on purpose: "nobody configured this" and "somebody turned this off"
 call for opposite responses when a deployment is misbehaving.
+
+### What a smaller model changes
+
+Nothing about the design, and everything about the margin.
+
+The system prompts were always a request rather than a control — `RejectCode`
+is what actually stops a solution reaching a student. A frontier model asked
+not to emit code complies almost always; an open-weight model complies less
+often. So the filter has stopped being defensive and become load-bearing, and
+it should be treated accordingly: it is the component to strengthen when in
+doubt, and the one never to relax on the grounds that the prompt already asks
+for prose.
 
 **Assist is optional in the same sense as Redis and the broker.** With no key
 the service reports itself disabled, the endpoints answer 503, the client hides

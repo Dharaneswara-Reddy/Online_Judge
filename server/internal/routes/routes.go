@@ -427,22 +427,40 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 // configured this" and "somebody turned this off" call for opposite
 // responses when a deployment is not behaving as expected.
 func newAssistProvider(cfg *config.Config) assist.Provider {
-	switch {
-	case !cfg.AssistEnabled:
+	if !cfg.AssistEnabled {
 		log.Println("Assist: disabled by ASSIST_ENABLED")
 		return nil
-	case cfg.AnthropicAPIKey == "":
-		log.Println("Assist: no ANTHROPIC_API_KEY set — hints, explanations, reviews and case generation are off")
-		return nil
 	}
 
-	model := cfg.AssistModel
-	if model == "" {
-		model = assist.DefaultModel
+	// Groq first. It is the intended provider — open-weight models on a
+	// free tier, which is what lets the assistant stay switched on for a
+	// personal project — and an Anthropic key is only consulted when
+	// there is no Groq one, so a deployment that has both is not
+	// silently billed for the feature it thought was free.
+	if cfg.GroqAPIKey != "" {
+		model := cfg.AssistModel
+		if model == "" {
+			model = assist.DefaultGroqModel
+		}
+		if cfg.AssistBaseURL != "" {
+			log.Printf("Assist: enabled using model %s at a custom endpoint", model)
+			return assist.NewOpenAICompatProvider(cfg.AssistBaseURL, cfg.GroqAPIKey, model, nil)
+		}
+		log.Printf("Assist: enabled using Groq, model %s", model)
+		return assist.NewGroqProvider(cfg.GroqAPIKey, model, nil)
 	}
-	log.Printf("Assist: enabled using model %s", model)
 
-	return assist.NewAnthropicProvider(cfg.AnthropicAPIKey, model, nil)
+	if cfg.AnthropicAPIKey != "" {
+		model := cfg.AssistModel
+		if model == "" {
+			model = assist.DefaultModel
+		}
+		log.Printf("Assist: enabled using Anthropic, model %s", model)
+		return assist.NewAnthropicProvider(cfg.AnthropicAPIKey, model, nil)
+	}
+
+	log.Println("Assist: no GROQ_API_KEY or ANTHROPIC_API_KEY set — hints, explanations, reviews and case generation are off")
+	return nil
 }
 
 // newAssistService wraps a provider in the hint/explain/review service.

@@ -57,14 +57,31 @@ type Config struct {
 	// not mean deleting a credential and restarting with it missing.
 	AssistEnabled bool
 
-	// AnthropicAPIKey authenticates the assist provider. Empty is the
-	// default and a supported mode: with no key the assist service
-	// reports itself disabled, the endpoints answer 503, and the client
-	// hides the feature. Nothing else in the API changes.
+	// GroqAPIKey authenticates the assist provider against Groq, which
+	// is the intended deployment: a judge on a free-tier host cannot
+	// carry a per-hint bill, and Groq serves open-weight models over an
+	// OpenAI-compatible endpoint at no cost.
+	//
+	// Empty is the default and a supported mode: with no key at all the
+	// assist service reports itself disabled, the endpoints answer 503,
+	// and the client hides the feature. Nothing else in the API changes.
+	GroqAPIKey string
+
+	// AnthropicAPIKey is the alternative provider, kept because the
+	// boundary is an interface and dropping it would buy nothing. Groq
+	// wins when both are set.
 	AnthropicAPIKey string
 
+	// AssistBaseURL overrides the completions endpoint for any other
+	// host speaking the OpenAI dialect — Together, OpenRouter, or a
+	// local llama.cpp or vLLM server. It is what keeps swapping the
+	// model a configuration change rather than a code change.
+	AssistBaseURL string
+
 	// AssistModel names the model used for assist completions. Empty
-	// means the assist package's own default.
+	// means the assist package's own default. It matters more than the
+	// default does: identifiers on a free tier are retired and renamed
+	// regularly.
 	AssistModel string
 }
 
@@ -113,7 +130,9 @@ func Load() *Config {
 		// only step needed to enable it, and defaults to keyless so that
 		// doing nothing leaves the API exactly as it was.
 		AssistEnabled:   getEnvAsBoolOrDefault("ASSIST_ENABLED", true),
+		GroqAPIKey:      getEnvOrDefault("GROQ_API_KEY", ""),
 		AnthropicAPIKey: getEnvOrDefault("ANTHROPIC_API_KEY", ""),
+		AssistBaseURL:   getEnvOrDefault("ASSIST_BASE_URL", ""),
 		AssistModel:     getEnvOrDefault("ASSIST_MODEL", ""),
 	}
 

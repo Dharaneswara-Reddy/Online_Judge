@@ -172,6 +172,16 @@ services:
       # channel the site no longer serves. Override to false only for a
       # deliberate plain-HTTP deployment.
       SECURE_COOKIES: ${SECURE_COOKIES:-true}
+
+      # The AI assistant. All four are optional and default to absent:
+      # with no key the assist endpoints answer 503, the client hides
+      # the feature, and the rest of the API is unchanged. Only the API
+      # container gets these — the worker judges code and never talks to
+      # a model.
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      ASSIST_ENABLED: ${ASSIST_ENABLED:-true}
+      ASSIST_MODEL: ${ASSIST_MODEL:-}
+      ASSIST_BASE_URL: ${ASSIST_BASE_URL:-}
     expose:
       - "8080"
     mem_limit: 144m
