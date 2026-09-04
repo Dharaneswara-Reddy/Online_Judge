@@ -35,6 +35,30 @@ Create `deploy/.env` on the host — never commit it:
     WORKER_COUNT=2
     MAX_SANDBOXES=1
 
+    # AI assistant (optional). Absent means the assist endpoints answer
+    # 503, the client hides the feature, and judging is unaffected.
+    GROQ_API_KEY=<groq key>
+    ASSIST_MODEL=openai/gpt-oss-120b
+
+Only the `api` service receives the assist variables — the worker judges
+code and never calls a model, so it is not given the key. That separation
+is in `docker-compose.prod.yml` and is worth preserving: the worker is the
+process holding the Docker socket, and it has no business holding a
+credential it cannot use.
+
+After adding the key, restart just the API:
+
+    docker compose --env-file .env -f docker-compose.prod.yml up -d api
+
+The startup log says which provider and model it picked, and a background
+check reports whether that model is actually available:
+
+    Assist: enabled using Groq, model openai/gpt-oss-120b
+    Assist: verified the configured model is available
+
+A rejected credential is reported as such rather than as a missing model,
+because the two have different fixes.
+
 Get the judge sandbox image (the worker starts a container from it for
 every submission). **Do not build it here** — it apt-installs a JDK and
 build-essential, which is the heaviest build in the project and exactly

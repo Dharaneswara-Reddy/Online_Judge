@@ -302,9 +302,36 @@ the plumbing and says nothing about the thing the feature is for.
 | Model availability check | **Unit tested** against a fake listing. Never run against Groq's real listing |
 | Telemetry | **Live server.** One record per request; asserted to carry no code, hint, key or hidden case |
 | Stuck detection | **Unit tested**, rule-based, no model involved |
-| **Hint quality at each rung** | **NOT VALIDATED.** No real model has ever seen these prompts |
-| **Model compliance with "never emit code"** | **NOT VALIDATED.** Only the filter's response to strings we chose |
-| **Real latency and rate-limit behaviour** | **NOT VALIDATED** |
+| Model availability check | **Real Groq.** The startup check hit the live listing and confirmed the model |
+| **Hint quality at each rung** | **Real Groq, manually read.** See below |
+| **Model compliance with "never emit code"** | **Real Groq.** 19 live generations, 0 delivered anything code-shaped |
+| **Real latency** | **Measured.** mean 1.07s, median 1.04s, max 1.62s over 19 live calls |
+| Prompt injection against the real model | **Real Groq.** 6 attacks through submitted code, 0 succeeded |
+
+### What the first real run found
+
+Two defects that no test with a fake provider could have reached, both
+fixed and pinned:
+
+- **The model fenced a quoted expression.** Asked to explain a verdict, it
+  quoted the student's own wrong expression back inside a ``` block —
+  perfectly reasonable prose, and an instant rejection by `RejectCode`,
+  which cannot tell a quoted fragment from a handed-over solution and
+  must not try. One sample in three was lost. The fix is in the prompt,
+  not the filter: fences are now forbidden explicitly and the model is
+  told a fence costs the student the whole answer.
+- **The token ceilings were sized for the prose, not for a reasoning
+  model.** `max_tokens` covers the tokens gpt-oss spends thinking, so a
+  ceiling of 380 left nothing for the answer: measured at that setting,
+  two replies in four came back completely empty and the other two
+  stopped mid-sentence. Ceilings are now four times larger, and brevity
+  is asked for in the prompt where it costs nothing.
+
+A third defect was pedagogical rather than mechanical: **rung 2 was
+returning rung 4.** The model gave a complete step-by-step walkthrough
+when asked for the shape of an approach, which collapses two rungs of the
+ladder into one and hands over the method. The rung-2 prompt now forbids
+describing the procedure and requires it to end on a question.
 
 Every "live server" row above was produced with a stub that returns whatever it
 is told. That is the right way to test a filter — you need to control what comes

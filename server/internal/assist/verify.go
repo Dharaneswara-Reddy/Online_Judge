@@ -76,6 +76,15 @@ func (p *openAICompatProvider) VerifyModel(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("%w: reading the model listing", ErrUnavailable)
 	}
+	// A rejected credential is worth naming. It is still "could not
+	// check" rather than "model is absent" — a 401 says nothing about
+	// which models exist — but an operator reading the log should not
+	// have to guess between a firewall and a bad key, and those have
+	// completely different fixes.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("%w: the API credential was rejected (%d); check GROQ_API_KEY",
+			ErrUnavailable, resp.StatusCode)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// No body in the error: an upstream rejecting a bad key is
 		// entitled to echo it back, and this string reaches a log.

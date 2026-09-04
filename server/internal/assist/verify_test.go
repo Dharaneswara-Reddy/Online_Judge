@@ -183,3 +183,31 @@ func TestAnthropicProviderDoesNotClaimToVerify(t *testing.T) {
 		t.Fatal("the Anthropic provider must not implement Verifier")
 	}
 }
+
+// TestVerifyModelNamesARejectedCredential: a 401 on the listing is still
+// "could not check" — it says nothing about which models exist — but an
+// operator should not have to guess between a firewall and a bad key,
+// because the two have completely different fixes.
+func TestVerifyModelNamesARejectedCredential(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"message":"Invalid API Key: `+verifyKey+`"}}`)
+	}))
+	defer srv.Close()
+
+	p := newOpenAICompatProvider(srv.URL+"/openai/v1/chat/completions", verifyKey, "m", srv.Client())
+	err := p.VerifyModel(context.Background())
+
+	if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrModelUnavailable) {
+		t.Fatalf("VerifyModel = %v, want ErrUnavailable and not ErrModelUnavailable", err)
+	}
+	if !strings.Contains(err.Error(), "credential was rejected") {
+		t.Errorf("error does not say the credential was rejected: %v", err)
+	}
+	if !strings.Contains(err.Error(), "GROQ_API_KEY") {
+		t.Errorf("error does not name the setting to check: %v", err)
+	}
+	if strings.Contains(err.Error(), verifyKey) {
+		t.Fatalf("error carried the API key: %v", err)
+	}
+}

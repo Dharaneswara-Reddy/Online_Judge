@@ -219,3 +219,66 @@ func TestReviewPromptFencesCode(t *testing.T) {
 		t.Fatal("review system prompt does not declare the fence contents untrusted")
 	}
 }
+
+// TestEveryPromptForbidsMarkdownFences pins a fix that came out of real
+// model output rather than reasoning. Asked to explain a verdict,
+// gpt-oss-120b quoted the student's own wrong expression back to them
+// inside a fenced block — reasonable prose, and an instant rejection by
+// RejectCode, which cannot tell a quoted fragment from a handed-over
+// solution and must not try. One sample in three was lost that way, so
+// the prohibition is stated in the prompt where it costs nothing.
+func TestEveryPromptForbidsMarkdownFences(t *testing.T) {
+	systems := []string{
+		buildExplainPrompt(ExplainRequest{Problem: sampleProblem()}, DefaultMaxCodeBytes).System,
+		buildReviewPrompt(ReviewRequest{Problem: sampleProblem()}, DefaultMaxCodeBytes).System,
+	}
+	for r := RungConstraint; r <= RungOutline; r++ {
+		systems = append(systems, hintSystem(r))
+	}
+
+	for i, sys := range systems {
+		if !strings.Contains(sys, "```") {
+			t.Errorf("prompt %d never shows the model the fence token it must not emit", i)
+		}
+		if !strings.Contains(strings.ToLower(sys), "never use a markdown code fence") {
+			t.Errorf("prompt %d does not forbid fences", i)
+		}
+	}
+}
+
+// TestRungTwoRefusesToGiveTheProcedure guards against the ladder
+// collapsing. On the first real run, rung 2 returned a complete
+// step-by-step walkthrough — the whole of rung 4 — which makes the two
+// middle rungs the same rung and hands over the method a student was
+// meant to find.
+func TestRungTwoRefusesToGiveTheProcedure(t *testing.T) {
+	sys := hintSystem(RungShape)
+
+	for _, want := range []string{"Do not describe the procedure", "Do not give steps", "three sentences"} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("rung 2 prompt is missing the limit %q", want)
+		}
+	}
+	if !strings.Contains(hintSystem(RungOutline), "step by step") &&
+		!strings.Contains(hintSystem(RungOutline), "steps in English") {
+		t.Error("rung 4 no longer asks for the steps it is supposed to own")
+	}
+}
+
+// TestPromptsLeaveRoomToFinishASentence: rung 3 truncated mid-sentence
+// on the first real run because its ceiling was 360 tokens.
+func TestPromptsLeaveRoomToFinishASentence(t *testing.T) {
+	// Measured, not guessed: at 380 the real model returned an empty
+	// reply half the time, because max_tokens covers reasoning tokens
+	// too. Every rung needs room for thinking it never shows anyone.
+	for r := RungConstraint; r <= RungOutline; r++ {
+		if got := hintTokens(r); got < 1000 {
+			t.Errorf("rung %d ceiling = %d; a reasoning model spends most of that before it writes anything", r, got)
+		}
+	}
+	for r := RungConstraint; r <= RungOutline; r++ {
+		if !strings.Contains(hintSystem(r), "Finish your final sentence") {
+			t.Errorf("rung %d does not ask the model to finish its sentence", r)
+		}
+	}
+}
