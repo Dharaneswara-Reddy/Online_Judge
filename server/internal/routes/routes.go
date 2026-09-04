@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/toji339/online-judge/internal/assist"
+	"github.com/toji339/online-judge/internal/casegen"
 	"github.com/toji339/online-judge/internal/companytag"
 	companytagmongo "github.com/toji339/online-judge/internal/companytag/mongorepo"
 	"github.com/toji339/online-judge/internal/config"
@@ -373,7 +374,8 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	//     the interactive path, explanations are the cheapest and most
 	//     cacheable, and a review is the most expensive generation the
 	//     feature makes.
-	assistSvc := newAssistService(cfg)
+	assistProvider := newAssistProvider(cfg)
+	assistSvc := newAssistService(assistProvider)
 	assistController := controllers.NewAssistController(assistSvc, problemSvc, submissionSvc)
 
 	publicProblems.GET("/:slug/assist/state",
@@ -390,25 +392,48 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 			middleware.RateLimit(deps.Limiter, "assist-review", 5, time.Minute), assistController.Review)
 	}
 
+	//     The admin case generator shares that provider and, unusually
+	//     for an assist route, also needs the playground runner: a
+	//     proposal's expected output is the stdout of the admin's own
+	//     reference solution, so generating cases means executing code.
+	//     The runner may be nil here, exactly as it may be for the
+	//     playground itself — proposals then come back unverified rather
+	//     than not at all.
+	//
+	//     It hangs off the existing admin problem group, which already
+	//     carries AuthMiddleware and AdminOnly, and reuses the :id
+	//     wildcard that group established.
+	caseGenController := controllers.NewCaseGenController(
+		casegen.NewGenerator(assistProvider, runner), problemSvc)
+	adminProblems.POST("/:id/assist/testcases",
+		middleware.RateLimit(deps.Limiter, "assist-casegen", 5, time.Minute),
+		caseGenController.GenerateTestCases)
+
 	// 14. Return the configured router
 	return router
 }
 
-// newAssistService builds the assist service from configuration.
+// newAssistProvider builds the model boundary from configuration, or
+// returns nil when the feature is not configured.
 //
-// It always returns a usable *Service. Two separate settings can leave
-// it disabled — a missing key and an explicit kill switch — and they are
-// logged differently on purpose: "nobody configured this" and "somebody
-// turned this off" call for opposite responses when a deployment is not
-// behaving as expected.
-func newAssistService(cfg *config.Config) *assist.Service {
+// It returns the provider rather than a finished service because two
+// features now sit on the same credential — the student-facing assist
+// service and the admin case generator — and constructing a second
+// provider for the second feature would mean two HTTP clients, two
+// timeouts, and two places to change when the model id moves.
+//
+// Two separate settings can leave it nil — a missing key and an explicit
+// kill switch — and they are logged differently on purpose: "nobody
+// configured this" and "somebody turned this off" call for opposite
+// responses when a deployment is not behaving as expected.
+func newAssistProvider(cfg *config.Config) assist.Provider {
 	switch {
 	case !cfg.AssistEnabled:
 		log.Println("Assist: disabled by ASSIST_ENABLED")
-		return assist.NewService(nil, assist.Options{})
+		return nil
 	case cfg.AnthropicAPIKey == "":
-		log.Println("Assist: no ANTHROPIC_API_KEY set — hints, explanations and reviews are off")
-		return assist.NewService(nil, assist.Options{})
+		log.Println("Assist: no ANTHROPIC_API_KEY set — hints, explanations, reviews and case generation are off")
+		return nil
 	}
 
 	model := cfg.AssistModel
@@ -417,8 +442,18 @@ func newAssistService(cfg *config.Config) *assist.Service {
 	}
 	log.Printf("Assist: enabled using model %s", model)
 
+	return assist.NewAnthropicProvider(cfg.AnthropicAPIKey, model, nil)
+}
+
+// newAssistService wraps a provider in the hint/explain/review service.
+// A nil provider is a supported configuration and produces a Service
+// whose every method reports ErrDisabled.
+func newAssistService(provider assist.Provider) *assist.Service {
+	if provider == nil {
+		return assist.NewService(nil, assist.Options{})
+	}
 	return assist.NewService(
-		assist.NewAnthropicProvider(cfg.AnthropicAPIKey, model, nil),
+		provider,
 		assist.Options{Cache: assist.NewMemoryCache(assistCacheTTL, assistCacheEntries)},
 	)
 }

@@ -51,6 +51,11 @@ func TestSetupRegistersEveryRouteWithoutConflict(t *testing.T) {
 		"POST /api/assist/hint",
 		"POST /api/assist/explain",
 		"POST /api/assist/review",
+		// The admin case generator shares the :id wildcard the admin
+		// problem group already established, which is the other place a
+		// conflicting wildcard name would have brought Setup down.
+		"POST /api/admin/problems/:id/assist/testcases",
+		"POST /api/admin/problems/:id/testcases",
 	} {
 		assert.True(t, registered[route], "route not registered: %s", route)
 	}
