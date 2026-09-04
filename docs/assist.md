@@ -85,9 +85,43 @@ eventually hands somebody a working solution.
 So `assist/filter.go` runs on every generated string before any caller sees it:
 
 - **`RejectCode`** — fenced blocks, function and class definitions, language
-  entry points, and runs of three or more statement-shaped lines.
-- **`RejectLeak`** — any fragment of the hidden case, eight characters or
-  longer, appearing in the response.
+  entry points, all-caps pseudocode, two or more consecutive statement-shaped
+  lines, and a single line that is entirely code-shaped: balanced brackets, at
+  least one call, no sentence punctuation and no ordinary English in it. Input
+  is normalised first — zero-width characters stripped, Cyrillic and Greek
+  homoglyphs folded to ASCII, list markers removed — so `d<ZWSP>ef`, a `bеst`
+  spelled with a Cyrillic е, and `1. best = 0` are all seen as what they are.
+- **`RejectLeak`** — any fragment of the hidden case eight characters or
+  longer, plus a whole expected output shorter than that when it appears in a
+  disclosure context: after a verb of output, after "the answer is", or in
+  quotes.
+
+The one-liner rule earns its keep: for an easy problem, one line *is* the
+solution, and requiring a run of lines meant `print(max(a))` was served to the
+student with a 200. That was observed on a running server, not theorised.
+
+### Where the filter is thin
+
+Recorded because a known gap is worth more than a false sense of a solid one,
+and each of these has a test pinning the current behaviour:
+
+- **A lone ambiguous statement passes.** `count = 0` on its own is accepted,
+  because it is also ordinary prose about a problem; a second such line beside
+  it is rejected. This is forced by the false-positive corpus and is the
+  deliberate trade.
+- **A bare expression line is now rejected** even when it is legitimate prose —
+  `prices[i] - lo` alone on a line reads exactly like a line of a solution.
+  Naming it in a sentence is fine.
+- **An unframed short answer can still leak.** For a problem whose whole
+  expected output is `-1`, "everything collapses to -1 by the end" passes. The
+  framing test is phrasing-based and a determined model can walk around it.
+- **Homoglyph folding is partial.** The Cyrillic and Greek letters that render
+  identically in a monospace font are folded; the mathematical alphanumeric
+  block (U+1D400) is not.
+- **`RejectLeak` does not normalise confusables**, so a homoglyph-obfuscated
+  echo of a hidden case would evade it. Changing that needs its own corpus
+  pass, because leak matching is exact-substring and folding changes what
+  "verbatim" means.
 
 A string that trips either is **discarded, not trimmed**. A filter that edits
 its input is a filter that can be talked into editing badly.
