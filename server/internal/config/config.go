@@ -49,6 +49,23 @@ type Config struct {
 	// is the one that has to be asked for, and only local development
 	// over plain HTTP should ask.
 	SecureCookies bool
+
+	// AssistEnabled is the kill switch for the AI assist features — the
+	// hint ladder, verdict explanations and post-accept reviews. It is
+	// separate from the API key on purpose: turning the feature off
+	// during an incident, or for a cohort sitting an assessment, should
+	// not mean deleting a credential and restarting with it missing.
+	AssistEnabled bool
+
+	// AnthropicAPIKey authenticates the assist provider. Empty is the
+	// default and a supported mode: with no key the assist service
+	// reports itself disabled, the endpoints answer 503, and the client
+	// hides the feature. Nothing else in the API changes.
+	AnthropicAPIKey string
+
+	// AssistModel names the model used for assist completions. Empty
+	// means the assist package's own default.
+	AssistModel string
 }
 
 // minJWTSecretLength is the shortest signing key we accept. HS256 with a
@@ -91,6 +108,13 @@ func Load() *Config {
 		// and SECURE_COOKIES overrides either way.
 		SecureCookies: getEnvAsBoolOrDefault("SECURE_COOKIES",
 			strings.HasPrefix(getEnvOrDefault("CLIENT_URL", "http://localhost:5173"), "https://")),
+
+		// The assist feature defaults to on so that setting a key is the
+		// only step needed to enable it, and defaults to keyless so that
+		// doing nothing leaves the API exactly as it was.
+		AssistEnabled:   getEnvAsBoolOrDefault("ASSIST_ENABLED", true),
+		AnthropicAPIKey: getEnvOrDefault("ANTHROPIC_API_KEY", ""),
+		AssistModel:     getEnvOrDefault("ASSIST_MODEL", ""),
 	}
 
 	// 3. Refuse to start on a signing key weak enough to brute-force

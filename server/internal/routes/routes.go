@@ -11,6 +11,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 
+	"github.com/toji339/online-judge/internal/assist"
 	"github.com/toji339/online-judge/internal/companytag"
 	companytagmongo "github.com/toji339/online-judge/internal/companytag/mongorepo"
 	"github.com/toji339/online-judge/internal/config"
@@ -358,6 +359,75 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 		statsController.Summary)
 	publicProblems.GET("/recent", statsController.RecentProblems)
 
-	// 13. Return the configured router
+	// 13. Mount the AI assist routes.
+	//
+	//     Assist is an optional dependency in exactly the sense Redis and
+	//     the broker are: with no key configured the service reports
+	//     itself disabled, the endpoints answer 503, and the client hides
+	//     the feature. Nothing else in the API changes, and no other
+	//     feature may come to depend on it.
+	//
+	//     Every route here costs a model call, so each one is rate
+	//     limited per user on top of the ownership checks in the
+	//     controller. The limits differ because the calls do: hints are
+	//     the interactive path, explanations are the cheapest and most
+	//     cacheable, and a review is the most expensive generation the
+	//     feature makes.
+	assistSvc := newAssistService(cfg)
+	assistController := controllers.NewAssistController(assistSvc, problemSvc, submissionSvc)
+
+	publicProblems.GET("/:slug/assist/state",
+		middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions), assistController.State)
+
+	assistGroup := router.Group("/api/assist")
+	assistGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions))
+	{
+		assistGroup.POST("/hint",
+			middleware.RateLimit(deps.Limiter, "assist-hint", 10, time.Minute), assistController.Hint)
+		assistGroup.POST("/explain",
+			middleware.RateLimit(deps.Limiter, "assist-explain", 15, time.Minute), assistController.Explain)
+		assistGroup.POST("/review",
+			middleware.RateLimit(deps.Limiter, "assist-review", 5, time.Minute), assistController.Review)
+	}
+
+	// 14. Return the configured router
 	return router
 }
+
+// newAssistService builds the assist service from configuration.
+//
+// It always returns a usable *Service. Two separate settings can leave
+// it disabled — a missing key and an explicit kill switch — and they are
+// logged differently on purpose: "nobody configured this" and "somebody
+// turned this off" call for opposite responses when a deployment is not
+// behaving as expected.
+func newAssistService(cfg *config.Config) *assist.Service {
+	switch {
+	case !cfg.AssistEnabled:
+		log.Println("Assist: disabled by ASSIST_ENABLED")
+		return assist.NewService(nil, assist.Options{})
+	case cfg.AnthropicAPIKey == "":
+		log.Println("Assist: no ANTHROPIC_API_KEY set — hints, explanations and reviews are off")
+		return assist.NewService(nil, assist.Options{})
+	}
+
+	model := cfg.AssistModel
+	if model == "" {
+		model = assist.DefaultModel
+	}
+	log.Printf("Assist: enabled using model %s", model)
+
+	return assist.NewService(
+		assist.NewAnthropicProvider(cfg.AnthropicAPIKey, model, nil),
+		assist.Options{Cache: assist.NewMemoryCache(assistCacheTTL, assistCacheEntries)},
+	)
+}
+
+// Assist cache sizing. Fifteen minutes is long enough for a class
+// working the same problem to share one generation, and short enough
+// that an edited statement stops being described by a stale hint before
+// anyone notices.
+const (
+	assistCacheTTL     = 15 * time.Minute
+	assistCacheEntries = 1024
+)
