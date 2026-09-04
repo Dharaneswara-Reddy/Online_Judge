@@ -20,6 +20,11 @@ The platform runs as two Go programs plus three external services.
 Judging capacity therefore scales independently of request-handling capacity:
 run more workers without touching the API tier.
 
+An optional third outbound dependency exists: the AI assistant calls the
+Anthropic Messages API. It is not a process and runs nothing on the judge host
+— see `assist.md` for why inference sits outside the judging boundary and what
+the hint ladder refuses to do.
+
 **Both RabbitMQ and Redis are optional.** With no broker the API judges inline
 in the request; with no Redis, War Room events reach only clients attached to
 the same API instance and rate limits are not enforced. Neither absence stops
