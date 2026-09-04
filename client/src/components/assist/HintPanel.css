@@ -1,0 +1,156 @@
+/* The panel is opened deliberately, so it is allowed to take space in
+   the right pane — but never unbounded space: it caps its own height and
+   scrolls, so a long ladder cannot squeeze the editor out of the page. */
+.assist-hints {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-color) transparent;
+}
+
+.assist-hints-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.assist-hints-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+/* Deliberately next to the title rather than buried at the bottom: the
+   count is part of the point, not a footnote. */
+.assist-hints-count {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+}
+
+.assist-hints-close {
+  margin-left: auto;
+  padding: 2px 6px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.assist-hints-close:hover {
+  color: var(--text-primary);
+}
+
+.assist-hints-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.assist-hint-label {
+  margin-bottom: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.assist-hint-prose {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.assist-hint-prose:last-child {
+  margin-bottom: 0;
+}
+
+.assist-hints-loading {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.assist-hints-error {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--error);
+}
+
+.assist-hints-next {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.assist-hints-next-what {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.assist-hints-next-what strong {
+  color: var(--text-primary);
+}
+
+.assist-hints-more {
+  padding: 6px 12px;
+  font-family: var(--font-family);
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.assist-hints-more:hover {
+  color: var(--accent-contrast);
+  background: var(--accent);
+}
+
+.assist-hints-floor {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-color);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.assist-hints-disclosure {
+  margin: 0;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.assist-hints-close:focus-visible,
+.assist-hints-more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

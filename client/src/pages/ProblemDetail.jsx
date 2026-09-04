@@ -10,6 +10,9 @@ import LanguageSelector from "../components/editor/LanguageSelector";
 import ExecutionPanel from "../components/editor/ExecutionPanel";
 import DiscussionPanel from "../components/problem/DiscussionPanel";
 import CompanyTagWidget from "../components/problem/CompanyTagWidget";
+import StuckNudge from "../components/assist/StuckNudge";
+import HintPanel from "../components/assist/HintPanel";
+import VerdictInsight from "../components/assist/VerdictInsight";
 import { STARTER_CODE } from "../data/starterCode";
 import "./ProblemDetail.css";
 
@@ -62,12 +65,36 @@ export default function ProblemDetail() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitResult, setSubmitResult] = useState(null);
 
+  // AI assist state. `assistOff` latches once any assist call reports the
+  // feature is switched off server-side, so the page stops offering
+  // something that is not there. `assistCheck` is bumped on a terminal
+  // verdict and is the only thing that makes the nudge look again —
+  // there is no timer anywhere in this feature.
+  const [assistOff, setAssistOff] = useState(false);
+  const [assistCheck, setAssistCheck] = useState(0);
+  const [hintsOpen, setHintsOpen] = useState(false);
+  const [hintCeiling, setHintCeiling] = useState(0);
+
+  const disableAssist = useCallback(() => {
+    setAssistOff(true);
+    setHintsOpen(false);
+  }, []);
+
+  const openHints = useCallback((state) => {
+    setHintCeiling(state?.maxRung ?? 0);
+    setHintsOpen(true);
+  }, []);
+
   // Fetch problem data
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
       setError(null);
+      // Another problem is another ladder: close the hints and let the
+      // nudge re-read its own per-problem dismissal.
+      setHintsOpen(false);
+      setHintCeiling(0);
       try {
         const res = await fetchProblem(slug);
         if (!cancelled) {
@@ -141,11 +168,18 @@ export default function ProblemDetail() {
       const queued = await submitSolution({ slug, language, code });
       setSubmitResult(queued);
 
+      let final = queued;
       if (queued.submissionId && !isTerminalStatus(queued.status)) {
-        const final = await pollSubmission(queued.submissionId, {
+        final = await pollSubmission(queued.submissionId, {
           onUpdate: setSubmitResult,
         });
         setSubmitResult(final);
+      }
+
+      // A verdict is the one discrete event that re-asks whether this
+      // student looks stuck. Nothing else triggers that check.
+      if (final && isTerminalStatus(final.status)) {
+        setAssistCheck((n) => n + 1);
       }
     } catch (err) {
       setSubmitResult({
@@ -179,6 +213,10 @@ export default function ProblemDetail() {
   }
 
   const verdictInfo = submitResult ? VERDICT_DISPLAY[submitResult.status] : null;
+
+  // Every assist route is behind auth, so an anonymous visitor is never
+  // shown an offer that would only 401.
+  const assistOn = Boolean(user) && !assistOff;
 
   return (
     <div className="pd-page">
@@ -272,6 +310,13 @@ export default function ProblemDetail() {
             <div className="pd-toolbar">
               <LanguageSelector value={language} onChange={setLanguage} disabled={isRunning || isSubmitting} />
               <div className="pd-toolbar-actions">
+                {/* The nudge can be turned down forever; the ladder still
+                    has to be reachable for someone who changes their mind. */}
+                {assistOn && !hintsOpen && (
+                  <button className="pd-hints-btn" onClick={() => openHints(null)}>
+                    Hints
+                  </button>
+                )}
                 <button className="run-btn" onClick={handleRun} disabled={isRunning || isSubmitting}>
                   {isRunning ? "Running…" : "▶ Run"}
                 </button>
@@ -283,7 +328,30 @@ export default function ProblemDetail() {
             <div className="pd-code-area">
               <Suspense fallback={<EditorFallback />}><CodeEditor language={language} value={code} onChange={handleCodeChange} /></Suspense>
             </div>
+
+            {/* Floats over the editor rather than sitting below it, so
+                appearing never takes height from the code area. */}
+            {assistOn && !hintsOpen && (
+              <StuckNudge
+                slug={slug}
+                refreshKey={assistCheck}
+                onAskForHint={openHints}
+                onDisabled={disableAssist}
+              />
+            )}
           </div>
+
+          {assistOn && hintsOpen && (
+            <HintPanel
+              slug={slug}
+              language={language}
+              code={code}
+              submissionId={submitResult?.submissionId}
+              maxRung={hintCeiling}
+              onClose={() => setHintsOpen(false)}
+              onDisabled={disableAssist}
+            />
+          )}
 
           {/* Verdict banner */}
           {submitResult && verdictInfo && (
@@ -312,6 +380,16 @@ export default function ProblemDetail() {
                 <span className="pd-verdict-detail">
                   Runtime error on test case {submitResult.failedCase + 1}
                 </span>
+              )}
+
+              {/* Extends the banner: an offer on the same line, and the
+                  answer wrapped onto a line of its own beneath it. */}
+              {assistOn && (
+                <VerdictInsight
+                  submissionId={submitResult.submissionId}
+                  status={submitResult.status}
+                  onDisabled={disableAssist}
+                />
               )}
             </div>
           )}
