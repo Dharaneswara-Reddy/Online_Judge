@@ -39,11 +39,16 @@ const (
 
 	// DefaultGroqModel is used when no ASSIST_MODEL is configured.
 	//
-	// It is a deliberate default rather than the best available: model
-	// identifiers on a free tier are retired and renamed regularly, so
-	// the setting matters more than the constant. Change ASSIST_MODEL
-	// rather than this line.
-	DefaultGroqModel = "llama-3.3-70b-versatile"
+	// The constant matters less than the setting: identifiers on a free
+	// tier are retired on a schedule, and this one has already been
+	// changed once — llama-3.3-70b-versatile was the default until Groq
+	// announced its shutdown. Prefer changing ASSIST_MODEL to editing
+	// this line, and expect to change it again.
+	//
+	// gpt-oss-120b is the current choice because Groq lists it as a
+	// production model and recommends it for complex coding work, which
+	// is the shape of every prompt this package builds.
+	DefaultGroqModel = "openai/gpt-oss-120b"
 )
 
 // openAICompatProvider is a Provider for any host speaking the OpenAI

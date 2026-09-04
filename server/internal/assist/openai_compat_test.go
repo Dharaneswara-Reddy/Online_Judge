@@ -36,7 +36,7 @@ func TestGroqProviderSendsTheChatCompletionsShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newOpenAICompatProvider(srv.URL, compatKey, "llama-3.3-70b-versatile", srv.Client())
+	p := newOpenAICompatProvider(srv.URL, compatKey, "openai/gpt-oss-120b", srv.Client())
 
 	got, err := p.Complete(context.Background(), testPrompt())
 	if err != nil {
@@ -57,7 +57,7 @@ func TestGroqProviderSendsTheChatCompletionsShape(t *testing.T) {
 		t.Errorf("content-type = %q", ct)
 	}
 
-	if gotBody["model"] != "llama-3.3-70b-versatile" {
+	if gotBody["model"] != "openai/gpt-oss-120b" {
 		t.Errorf("model = %v", gotBody["model"])
 	}
 	if gotBody["max_tokens"] != float64(256) {
