@@ -2,6 +2,8 @@ package assist
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"hash/fnv"
 	"strconv"
@@ -148,22 +150,53 @@ func (s *Service) ExplainVerdict(ctx context.Context, req ExplainRequest) (Expla
 
 // ReviewSolution critiques a submission that already passed.
 //
-// It never caches: a review is about one person's code, and there is no
-// second reader it could be correct for.
+// The cache key is the code itself, hashed. Keying on (problem, verdict)
+// the way the verdict explanation does would be wrong here and quietly
+// so: two accepted submissions to the same problem are routinely
+// different programs, and serving one student a review of another
+// student's code would be both useless and a disclosure. Hashing means
+// the key carries no source, which matters because a cache key is the
+// kind of thing that ends up in a log line.
+//
+// Re-reviewing an unchanged submission is therefore free, which is the
+// behaviour a student expects when they reopen the panel, and it is the
+// main thing keeping this endpoint's cost down.
+//
+// The filter is the review-specific one. RejectCode is wrong for this
+// path — it forbids code outright, which is correct for a hint on an
+// unsolved problem and wrong for a reviewer quoting the student's own
+// accepted line back at them. See reviewfilter.go.
 func (s *Service) ReviewSolution(ctx context.Context, req ReviewRequest) (Review, error) {
 	if !s.Enabled() {
 		return Review{}, ErrDisabled
+	}
+
+	key := "review:" + problemKey(req.Problem) + ":" + codeFingerprint(req.Language, req.Code)
+	if cached, ok := s.lookup(key); ok {
+		return Review{Text: cached, Cached: true}, nil
 	}
 
 	text, err := s.generate(ctx, buildReviewPrompt(req, s.maxCodeBytes))
 	if err != nil {
 		return Review{}, err
 	}
-	if err := RejectCode(text); err != nil {
+	if err := RejectReviewDump(text); err != nil {
 		return Review{}, err
 	}
 
+	s.store(key, text)
 	return Review{Text: text}, nil
+}
+
+// codeFingerprint identifies a submission's source without carrying it.
+//
+// SHA-256 rather than the FNV hash used for problem identity: this one
+// separates one student's work from another's, so an accidental
+// collision would show somebody else's review, and a non-cryptographic
+// hash is the wrong tool for a boundary that matters.
+func codeFingerprint(language, code string) string {
+	sum := sha256.Sum256([]byte(language + "\x00" + code))
+	return hex.EncodeToString(sum[:16])
 }
 
 // generate calls the provider and normalises what comes back.

@@ -296,8 +296,12 @@ func (ac *AssistController) Review(c *gin.Context) {
 		return
 	}
 
-	c.Set(middleware.AssistOutcomeKey, "ok")
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"text": review.Text}})
+	c.Set(middleware.AssistCachedKey, review.Cached)
+	c.Set(middleware.AssistOutcomeKey, outcomeFor(review.Cached))
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    gin.H{"text": review.Text, "cached": review.Cached},
+	})
 }
 
 // ownedSubmission reads the submission named in the body and checks the

@@ -241,26 +241,86 @@ func buildReviewPrompt(req ReviewRequest, maxCodeBytes int) Prompt {
 	var b strings.Builder
 
 	b.WriteString(problemBlock(req.Problem))
+	fmt.Fprintf(&b, "\nLanguage: %s\n", req.Language)
 	if req.RuntimeMS > 0 {
-		fmt.Fprintf(&b, "\nAccepted in %dms using %dKB.\n", req.RuntimeMS, req.MemoryKB)
+		fmt.Fprintf(&b, "Accepted by the judge in %dms using %dKB.\n", req.RuntimeMS, req.MemoryKB)
+	} else {
+		b.WriteString("Accepted by the judge.\n")
 	}
 
 	b.WriteString("\nThe accepted submission:\n")
 	b.WriteString(fenceCode(req.Language, req.Code, maxCodeBytes))
 
-	b.WriteString("\nTask: give the time and space complexity, say how this approach compares with the one the " +
-		"problem is designed around, and name at most three concrete improvements.\n")
+	b.WriteString("\nTask: review this accepted submission using the eight headings, in order.\n")
 
 	return Prompt{
-		System: fencePreamble + "\n\n" +
-			`You are a reviewer reading a solution that has already been accepted. State its time and space ` +
-			`complexity and justify both. Say plainly whether the approach is the intended one. Then give at most ` +
-			`three specific improvements — naming what to change and why, in prose.` +
-			"\n\n" + noCodeRule,
+		System:      reviewSystem(req.Language),
 		User:        b.String(),
 		MaxTokens:   2200,
 		Temperature: 0.3,
 	}
+}
+
+// reviewSystem is the post-acceptance reviewer's brief.
+//
+// It is deliberately not the hint prompt with a different noun. A hint
+// is withholding something on purpose; a review has nothing left to
+// withhold, because the judge has already accepted the code. What it
+// has instead is a different failure mode: the easiest review to write
+// is a rewritten program with commentary, and that is an editorial —
+// the thing a student copies into the next problem — rather than a
+// review of what they actually wrote.
+//
+// The eight headings are fixed so the output is scannable and so a
+// reader can tell at a glance whether a section was skipped. The
+// correctness heading is worded carefully: the judge decided
+// correctness, this is advisory, and a reviewer that implies otherwise
+// is teaching students to trust it over the verdict.
+func reviewSystem(language string) string {
+	lang := strings.TrimSpace(language)
+	if lang == "" {
+		lang = "the submitted language"
+	}
+
+	return fencePreamble + "\n\n" +
+		`You are a senior engineer reviewing a solution that CodeArena's judge has already ACCEPTED.
+
+AUTHORITY. The judge decided correctness and it is the only authority on it. Your review is advisory and
+secondary. Never state or imply that you have verified, proved, or disproved correctness. If you suspect a
+genuine edge case the tests may not cover, raise it as something worth considering, not as a defect.
+
+SCOPE. Review the code in front of you. Do not rewrite it. Do not supply an alternative implementation, a
+"cleaner version", or a full function. You may quote at most two short snippets of AT MOST THREE LINES each,
+and only to point at something you are discussing — never as a replacement the student could paste. Prefer
+prose. A response containing a rewritten solution is discarded in full and the student sees nothing.
+
+LANGUAGE. The submission is written in ` + lang + `. Every observation must be idiomatic for ` + lang + `
+specifically. Do not give advice that belongs to another language.
+
+BOUNDARIES. You have not been shown the test data and you must not speculate about it.
+Never mention hidden tests, specific test cases, expected outputs, or anything about how
+the judge works internally.
+
+SUBSTANCE. Be specific about this code. No generic praise, no filler, no restating what the code obviously
+does. If a section has nothing worth saying, say so in one short sentence and move on. Prioritise the two or
+three observations that would actually change how this person writes their next solution.
+
+Structure the reply as exactly these eight markdown headings, in this order:
+
+## Summary
+## Correctness confidence
+## Complexity
+## Readability
+## Maintainability
+## Potential improvements
+## Edge cases worth considering
+## Overall takeaway
+
+Under "Correctness confidence", say plainly that CodeArena's judge accepted this submission against its test
+suite and that what follows is an additional advisory read. Do not claim to have proved anything.
+
+FORMATTING: never use a markdown code fence except for the at most two short snippets permitted above.
+Finish your final sentence.`
 }
 
 // problemBlock renders what the model may know about the problem. Every

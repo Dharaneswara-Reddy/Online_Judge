@@ -235,7 +235,7 @@ describe('VerdictInsight', () => {
   });
 
   it('offers a review instead once the submission is accepted', async () => {
-    reviewSolution.mockResolvedValue({ text: 'Linear time, constant space.' });
+    reviewSolution.mockResolvedValue({ text: 'Linear time, constant space.', cached: false });
     const user = userEvent.setup();
 
     render(<VerdictInsight submissionId="s2" status="accepted" />);
@@ -278,5 +278,68 @@ describe('VerdictInsight', () => {
 
     expect(await screen.findByText('Too many requests.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /explain this verdict/i })).toBeInTheDocument();
+  });
+});
+
+describe('VerdictInsight — post-acceptance review', () => {
+  const REVIEW = [
+    '## Summary',
+    'Clear and idiomatic.',
+    '## Correctness confidence',
+    "CodeArena's judge accepted this against its test suite; this is an advisory read.",
+    '## Overall takeaway',
+    'Solid work.',
+  ].join('\n\n');
+
+  it('renders the eight headings as headings, not as hashes', async () => {
+    reviewSolution.mockResolvedValue({ text: REVIEW, cached: false });
+    const user = userEvent.setup();
+
+    render(<VerdictInsight submissionId="s10" status="accepted" />);
+    await user.click(screen.getByRole('button', { name: /review my solution/i }));
+
+    expect(await screen.findByRole('heading', { name: 'Summary' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Overall takeaway' })).toBeInTheDocument();
+    expect(screen.queryByText(/^## /)).toBeNull();
+  });
+
+  it('says the judge decided correctness, not the model', async () => {
+    reviewSolution.mockResolvedValue({ text: REVIEW, cached: false });
+    const user = userEvent.setup();
+
+    render(<VerdictInsight submissionId="s11" status="accepted" />);
+    await user.click(screen.getByRole('button', { name: /review my solution/i }));
+
+    expect(await screen.findByText(/judge decided this submission is correct/i)).toBeInTheDocument();
+    expect(screen.getByText(/advisory review/i)).toBeInTheDocument();
+  });
+
+  it('mentions when a review came back from an earlier read', async () => {
+    reviewSolution.mockResolvedValue({ text: REVIEW, cached: true });
+    const user = userEvent.setup();
+
+    render(<VerdictInsight submissionId="s12" status="accepted" />);
+    await user.click(screen.getByRole('button', { name: /review my solution/i }));
+
+    expect(await screen.findByText(/earlier read of this same submission/i)).toBeInTheDocument();
+  });
+
+  it('never offers a review for an unaccepted verdict', () => {
+    for (const status of ['wrong_answer', 'tle', 'mle', 'runtime_error', 'compile_error']) {
+      const { unmount } = render(<VerdictInsight submissionId="s13" status={status} />);
+      expect(screen.queryByRole('button', { name: /review my solution/i })).toBeNull();
+      unmount();
+    }
+  });
+
+  it('reports a rate limit without losing the offer', async () => {
+    reviewSolution.mockRejectedValue({ response: { data: { message: "You're doing that too often." } } });
+    const user = userEvent.setup();
+
+    render(<VerdictInsight submissionId="s14" status="accepted" />);
+    await user.click(screen.getByRole('button', { name: /review my solution/i }));
+
+    expect(await screen.findByText("You're doing that too often.")).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /review my solution/i })).toBeInTheDocument();
   });
 });

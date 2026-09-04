@@ -109,7 +109,8 @@ export async function explainVerdict(submissionId) {
 export async function reviewSolution(submissionId) {
   try {
     const { data } = await api.post("/assist/review", { submissionId });
-    return { text: payloadOf(data).text ?? "" };
+    const review = payloadOf(data);
+    return { text: review.text ?? "", cached: Boolean(review.cached) };
   } catch (err) {
     if (isDisabled(err)) return null;
     throw err;

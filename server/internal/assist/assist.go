@@ -207,8 +207,13 @@ type ReviewRequest struct {
 	MemoryKB  int64
 }
 
-// Review is the answer to a ReviewRequest. There is no Cached field
-// because a review is about exactly one submission and is never reused.
+// Review is the answer to a ReviewRequest.
+//
+// Cached says the text came from a previous request about this exact
+// submission — the same student reopening the panel, not a different
+// student's code. Reviews are keyed by a hash of the source, so two
+// accepted solutions to one problem never share one.
 type Review struct {
-	Text string
+	Text   string
+	Cached bool
 }

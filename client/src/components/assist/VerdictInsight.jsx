@@ -15,16 +15,29 @@ import { isTerminalStatus } from "../../api/submissions";
 import { explainVerdict, reviewSolution } from "../../api/assist";
 import "./VerdictInsight.css";
 
-/** Prose in, paragraphs out. Never a code block. */
+/**
+ * Prose in, paragraphs out.
+ *
+ * A post-acceptance review comes back under eight fixed markdown
+ * headings, so those are rendered as headings rather than as paragraphs
+ * beginning with hashes. Everything else stays prose: this deliberately
+ * cannot render a code block, because a review that contained one would
+ * be a bug and there is no reason to make it look good.
+ */
 function InsightProse({ text }) {
-  const paragraphs = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
-  return paragraphs.map((line, i) => (
-    <p key={i} className="assist-insight-prose">{line}</p>
-  ));
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  return lines.map((line, i) => {
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    if (heading) {
+      return <h4 key={i} className="assist-insight-heading">{heading[1]}</h4>;
+    }
+    return <p key={i} className="assist-insight-prose">{line.replace(/^[-*]\s+/, "\u2022 ")}</p>;
+  });
 }
 
 export default function VerdictInsight({ submissionId, status, onDisabled }) {
   const [text, setText] = useState(null);
+  const [cached, setCached] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [hidden, setHidden] = useState(false);
@@ -32,6 +45,7 @@ export default function VerdictInsight({ submissionId, status, onDisabled }) {
   // A new verdict is a new question; nothing carries over from the last.
   useEffect(() => {
     setText(null);
+    setCached(false);
     setError(null);
     setLoading(false);
   }, [submissionId, status]);
@@ -60,6 +74,7 @@ export default function VerdictInsight({ submissionId, status, onDisabled }) {
         return;
       }
       setText(result.text);
+      setCached(Boolean(result.cached));
     } catch (err) {
       setError(
         err?.response?.data?.message ?? "That could not be fetched right now."
@@ -92,6 +107,12 @@ export default function VerdictInsight({ submissionId, status, onDisabled }) {
 
       {text !== null && (
         <div className="assist-insight-body">
+          {accepted && (
+            <p className="assist-insight-note">
+              CodeArena&rsquo;s judge decided this submission is correct. What follows is an
+              advisory review of how it is written{cached ? ", shown from an earlier read of this same submission" : ""}.
+            </p>
+          )}
           <InsightProse text={text} />
         </div>
       )}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -78,8 +79,12 @@ func newAssistRig(t *testing.T, provider assist.Provider, userID string) *assist
 		ProblemID: prob.ID, Input: hiddenInput, ExpectedOutput: hiddenExpected, IsSample: false,
 	}))
 
+	// A cache, as production wires one. Without it the rig silently
+	// tests a configuration nothing runs.
 	ctrl := NewAssistController(
-		assist.NewService(provider, assist.Options{}), problems, submissions)
+		assist.NewService(provider, assist.Options{
+			Cache: assist.NewMemoryCache(time.Minute, 64),
+		}), problems, submissions)
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) { c.Set("userID", userID) })
@@ -352,4 +357,109 @@ func TestStateSurfacesTheStuckSignal(t *testing.T) {
 	assert.Equal(t, true, data["stuck"])
 	assert.Equal(t, float64(3), data["attempts"])
 	assert.NotEmpty(t, data["reason"])
+}
+
+// --- post-acceptance review: the verdict gate ---------------------------
+//
+// The gate is the whole safety argument for this endpoint. A review
+// discusses the code in full; on anything the judge has not accepted,
+// that is a solution with commentary. So every non-accepted terminal
+// verdict, and both transient states, must be refused.
+
+func TestReviewRefusesEveryUnacceptedVerdict(t *testing.T) {
+	cases := []struct {
+		name   string
+		status submission.Status
+	}{
+		{"wrong answer", submission.StatusWrongAnswer},
+		{"time limit", submission.StatusTLE},
+		{"memory limit", submission.StatusMLE},
+		{"runtime error", submission.StatusRuntimeError},
+		{"compile error", submission.StatusCompileError},
+		{"output limit", submission.StatusOutputLimitExceeded},
+		{"judge error", submission.StatusJudgeError},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newAssistRig(t, stubProvider{reply: okHint}, "u1")
+			mine := rig.judge(t, "u1", tc.status, 1)
+
+			rec := rig.post(t, "/api/assist/review", gin.H{"submissionId": mine.ID})
+
+			assert.Equal(t, http.StatusNotFound, rec.Code,
+				"a %s submission was accepted for review", tc.name)
+			assert.NotContains(t, rec.Body.String(), okHint)
+		})
+	}
+}
+
+// A submission still being judged has no verdict to stand on.
+func TestReviewRefusesAPendingSubmission(t *testing.T) {
+	rig := newAssistRig(t, stubProvider{reply: okHint}, "u1")
+
+	sub, err := rig.submissions.Create(context.Background(), submission.CreateInput{
+		UserID: "u1", ProblemID: rig.problemID, ProblemSlug: rig.slug,
+		ProblemTitle: "Sum The Interesting Ones", Language: "python", Code: "print(0)",
+	})
+	require.NoError(t, err)
+
+	rec := rig.post(t, "/api/assist/review", gin.H{"submissionId": sub.ID})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestReviewReportsACacheHit pins the field the UI shows and the
+// telemetry records.
+func TestReviewReportsACacheHit(t *testing.T) {
+	rig := newAssistRig(t, stubProvider{reply: "Linear in time, constant in space."}, "u1")
+	mine := rig.judge(t, "u1", submission.StatusAccepted, -1)
+
+	first := rig.post(t, "/api/assist/review", gin.H{"submissionId": mine.ID})
+	require.Equal(t, http.StatusOK, first.Code)
+	assert.Equal(t, false, decodeData(t, first)["cached"])
+
+	second := rig.post(t, "/api/assist/review", gin.H{"submissionId": mine.ID})
+	require.Equal(t, http.StatusOK, second.Code)
+	assert.Equal(t, true, decodeData(t, second)["cached"],
+		"re-reviewing the same submission should not cost a second generation")
+}
+
+// TestReviewWithholdsARewrittenSolution drives the review filter through
+// the edge, with a provider that returns exactly what the feature must
+// never deliver.
+func TestReviewWithholdsARewrittenSolution(t *testing.T) {
+	rewrite := "Cleaner:\n\n```python\ndef solve(a):\n    total = 0\n    for x in a:\n        total += x\n    return total\n```"
+	rig := newAssistRig(t, stubProvider{reply: rewrite}, "u1")
+	mine := rig.judge(t, "u1", submission.StatusAccepted, -1)
+
+	rec := rig.post(t, "/api/assist/review", gin.H{"submissionId": mine.ID})
+
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "def solve")
+}
+
+// A review that starts talking about the judge's private data is
+// withheld even though this endpoint is never given any.
+func TestReviewWithholdsJudgeInternals(t *testing.T) {
+	leak := "## Summary\nGood work. The hidden test case here uses a single element."
+	rig := newAssistRig(t, stubProvider{reply: leak}, "u1")
+	mine := rig.judge(t, "u1", submission.StatusAccepted, -1)
+
+	rec := rig.post(t, "/api/assist/review", gin.H{"submissionId": mine.ID})
+
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "single element")
+}
+
+// An accepted submission with a short illustrative snippet is delivered:
+// the filter must not be so tight that the feature returns nothing.
+func TestReviewDeliversAReviewWithAShortSnippet(t *testing.T) {
+	good := "## Summary\nClear and idiomatic.\n\n## Readability\nConsider renaming `a`:\n\n```go\nlo := prices[0]\n```\n\n## Overall takeaway\nSolid."
+	rig := newAssistRig(t, stubProvider{reply: good}, "u1")
+	mine := rig.judge(t, "u1", submission.StatusAccepted, -1)
+
+	rec := rig.post(t, "/api/assist/review", gin.H{"submissionId": mine.ID})
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, decodeData(t, rec)["text"], "Overall takeaway")
 }

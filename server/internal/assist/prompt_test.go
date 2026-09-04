@@ -228,9 +228,12 @@ func TestReviewPromptFencesCode(t *testing.T) {
 // solution and must not try. One sample in three was lost that way, so
 // the prohibition is stated in the prompt where it costs nothing.
 func TestEveryPromptForbidsMarkdownFences(t *testing.T) {
+	// The review prompt is deliberately absent: it is the one path that
+	// may carry a fence, because a reviewer quoting two lines of a
+	// student's own accepted code is not handing anything over. Its
+	// contract is asserted separately below.
 	systems := []string{
 		buildExplainPrompt(ExplainRequest{Problem: sampleProblem()}, DefaultMaxCodeBytes).System,
-		buildReviewPrompt(ReviewRequest{Problem: sampleProblem()}, DefaultMaxCodeBytes).System,
 	}
 	for r := RungConstraint; r <= RungOutline; r++ {
 		systems = append(systems, hintSystem(r))
@@ -280,5 +283,50 @@ func TestPromptsLeaveRoomToFinishASentence(t *testing.T) {
 		if !strings.Contains(hintSystem(r), "Finish your final sentence") {
 			t.Errorf("rung %d does not ask the model to finish its sentence", r)
 		}
+	}
+}
+
+// TestReviewPromptStatesItsOwnContract. The review prompt is the only
+// one that permits a fence at all, so it must bound the allowance
+// itself — an unbounded "you may show code" is how a review becomes a
+// rewritten solution.
+func TestReviewPromptStatesItsOwnContract(t *testing.T) {
+	sys := buildReviewPrompt(ReviewRequest{
+		Problem: sampleProblem(), Language: "go", Code: "x := 1",
+	}, DefaultMaxCodeBytes).System
+
+	required := map[string]string{
+		"the judge is authoritative":    "advisory",
+		"no rewriting":                  "Do not rewrite it",
+		"a bounded snippet allowance":   "THREE LINES",
+		"no alternative implementation": "alternative implementation",
+		"hidden tests are off limits":   "hidden tests",
+		"the eight headings":            "## Overall takeaway",
+		"correctness is not claimed":    "Do not claim to have proved anything",
+		"untrusted input":               "untrusted",
+		"finish the sentence":           "Finish your final sentence",
+	}
+	for what, want := range required {
+		if !strings.Contains(sys, want) {
+			t.Errorf("review prompt does not establish %s (missing %q)", what, want)
+		}
+	}
+}
+
+// The reviewer must speak the submission's language, not Python by
+// default.
+func TestReviewPromptNamesTheSubmittedLanguage(t *testing.T) {
+	for _, lang := range []string{"go", "java", "cpp", "javascript"} {
+		sys := buildReviewPrompt(ReviewRequest{
+			Problem: sampleProblem(), Language: lang, Code: "x",
+		}, DefaultMaxCodeBytes).System
+		if !strings.Contains(sys, lang) {
+			t.Errorf("review prompt for %s never names the language", lang)
+		}
+	}
+
+	sys := buildReviewPrompt(ReviewRequest{Problem: sampleProblem()}, DefaultMaxCodeBytes).System
+	if strings.Contains(sys, "written in .") {
+		t.Error("an unset language produced a dangling sentence")
 	}
 }

@@ -67,3 +67,25 @@
   font-size: 0.75rem;
   color: var(--text-secondary);
 }
+
+/* Post-acceptance reviews arrive under eight fixed headings. They are
+   rendered as headings so the review can be scanned rather than read
+   end to end, which is how anyone actually uses one. */
+.assist-insight-heading {
+  margin: 0.9rem 0 0.25rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+.assist-insight-heading:first-child { margin-top: 0; }
+
+/* The standing reminder that the judge, not the model, decided
+   correctness. */
+.assist-insight-note {
+  margin: 0 0 0.6rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  opacity: 0.7;
+}

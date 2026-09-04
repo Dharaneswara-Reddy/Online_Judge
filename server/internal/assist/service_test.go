@@ -367,22 +367,99 @@ func TestExplainFiltersCode(t *testing.T) {
 
 // --- reviews -------------------------------------------------------------
 
-// TestReviewNeverCaches: a review is about exactly one submission, and
-// the controller only reaches it for an accepted one.
-func TestReviewNeverCaches(t *testing.T) {
+// TestReviewCachesOnTheCodeItself replaces an earlier test that asserted
+// reviews never cache. That was right when the key would have been
+// (problem, verdict): two accepted solutions to one problem are
+// routinely different programs, and sharing a review between them would
+// describe somebody else's code. Keying on a hash of the source makes
+// re-reviewing the same submission free while keeping different
+// submissions apart, which is the property actually wanted.
+func TestReviewCachesOnTheCodeItself(t *testing.T) {
 	fp := &fakeProvider{reply: "Your solution is linear in time and constant in space."}
 	s := newTestService(fp)
 
-	req := ReviewRequest{Problem: sampleProblem(), Language: "go", Code: "func main() {}"}
+	req := ReviewRequest{Problem: sampleProblem(), Language: "go", Code: "total := 0"}
 	ctx := context.Background()
 
-	for i := 0; i < 2; i++ {
-		if _, err := s.ReviewSolution(ctx, req); err != nil {
-			t.Fatalf("ReviewSolution: %v", err)
-		}
+	first, err := s.ReviewSolution(ctx, req)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if first.Cached {
+		t.Error("the first review reported a cache hit")
+	}
+
+	second, err := s.ReviewSolution(ctx, req)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if !second.Cached {
+		t.Error("re-reviewing an unchanged submission did not hit the cache")
+	}
+	if fp.count() != 1 {
+		t.Errorf("provider called %d times for one submission, want 1", fp.count())
+	}
+}
+
+// TestReviewSeparatesDifferentSubmissions is the half that matters for
+// disclosure: one student's review must never be served to another.
+func TestReviewSeparatesDifferentSubmissions(t *testing.T) {
+	fp := &fakeProvider{reply: "Linear in time, constant in space."}
+	s := newTestService(fp)
+
+	a := ReviewRequest{Problem: sampleProblem(), Language: "go", Code: "total := 0"}
+	b := ReviewRequest{Problem: sampleProblem(), Language: "go", Code: "sum := 0 // a different program"}
+	ctx := context.Background()
+
+	if _, err := s.ReviewSolution(ctx, a); err != nil {
+		t.Fatalf("a: %v", err)
+	}
+	got, err := s.ReviewSolution(ctx, b)
+	if err != nil {
+		t.Fatalf("b: %v", err)
+	}
+	if got.Cached {
+		t.Fatal("a review of different code was served from another submission's cache entry")
 	}
 	if fp.count() != 2 {
-		t.Fatalf("provider called %d times, want 2", fp.count())
+		t.Errorf("provider called %d times for two different submissions, want 2", fp.count())
+	}
+}
+
+// The same source in a different language is a different submission.
+func TestReviewSeparatesLanguages(t *testing.T) {
+	fp := &fakeProvider{reply: "Linear in time, constant in space."}
+	s := newTestService(fp)
+
+	req := ReviewRequest{Problem: sampleProblem(), Language: "go", Code: "x = 1"}
+	other := req
+	other.Language = "python"
+	ctx := context.Background()
+
+	if _, err := s.ReviewSolution(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReviewSolution(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if fp.count() != 2 {
+		t.Errorf("provider called %d times, want 2 — language is part of the identity", fp.count())
+	}
+}
+
+// TestCodeFingerprintCarriesNoSource: a cache key reaches logs.
+func TestCodeFingerprintCarriesNoSource(t *testing.T) {
+	const marker = "SECRET_STUDENT_IDENTIFIER"
+	got := codeFingerprint("python", "x = 1 # "+marker)
+
+	if strings.Contains(got, marker) {
+		t.Fatalf("fingerprint carried the source: %s", got)
+	}
+	if got == codeFingerprint("python", "x = 2") {
+		t.Fatal("different sources produced the same fingerprint")
+	}
+	if got != codeFingerprint("python", "x = 1 # "+marker) {
+		t.Fatal("fingerprint is not stable for identical input")
 	}
 }
 
