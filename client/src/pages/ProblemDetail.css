@@ -434,6 +434,24 @@
   min-height: 200px;
 }
 
+/* Monaco must not paint outside its own box.
+   It lays its content out into absolutely-positioned layers sized from
+   the container it measured. When the column squeezes the editor — which
+   is exactly what happens when a verdict banner fills with an
+   explanation — those layers keep their old height and spill downwards
+   over whatever is beneath. `automaticLayout` is already on and does not
+   prevent it; the stale layer survives long enough to matter.
+
+   Measured on the live site: the "Show me a little more" button sat at
+   y=444 with the editor ending at y=266, and elementFromPoint at the
+   button's own centre still returned Monaco's .view-lines. The button
+   was visible, enabled, stable — and un-clickable, with nothing in the
+   console. Clipping the container is what fixes it, and it holds
+   regardless of when Monaco gets around to re-laying-out. */
+.pd-code-area {
+  overflow: hidden;
+}
+
 .pd-right > .assist-hints,
 .pd-right > .pd-verdict-banner {
   flex: 0 0 auto;
