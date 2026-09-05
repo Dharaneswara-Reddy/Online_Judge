@@ -507,9 +507,19 @@ var answerContexts = []string{
 // has been flowed into a sentence.
 //
 // Both sides of every comparison are whitespace-normalised, which means
-// "3  1   4" no longer hides "3 1 4".
+// "3  1   4" no longer hides "3 1 4", and confusable-normalised, which
+// means a Cyrillic lookalike or a zero-width space wedged between two
+// digits no longer hides the case either. That second pass was missing
+// for a while: RejectCode had it and this did not, so the filter whose
+// entire job is to notice one specific string could be walked past with
+// a character nobody can see.
+//
+// Folding changes what "verbatim" means, so the false-positive
+// direction is tested alongside it — rung 3 exists to describe a hidden
+// case, and a leak filter that fires on any discussion of one makes the
+// rung unusable.
 func RejectLeak(text string, c HiddenCase) error {
-	normalisedText := normaliseWhitespace(text)
+	normalisedText := normaliseForLeak(text)
 	if normalisedText == "" {
 		return nil
 	}
@@ -528,14 +538,14 @@ func RejectLeak(text string, c HiddenCase) error {
 		}
 
 		// The whole section, flowed onto one line.
-		if whole := normaliseWhitespace(section.body); leaks(normalisedText, whole) {
+		if whole := normaliseForLeak(section.body); leaks(normalisedText, whole) {
 			return fmt.Errorf("%w: the %s appears verbatim", ErrLeak, section.name)
 		}
 
 		// Individual lines, which is how a multi-line case usually
 		// escapes: the model quotes one row of a grid.
 		for _, line := range strings.Split(section.body, "\n") {
-			if leaks(normalisedText, normaliseWhitespace(line)) {
+			if leaks(normalisedText, normaliseForLeak(line)) {
 				return fmt.Errorf("%w: a line of the %s appears verbatim", ErrLeak, section.name)
 			}
 		}
@@ -543,7 +553,7 @@ func RejectLeak(text string, c HiddenCase) error {
 
 	// The whole answer, when the whole answer is too short for the
 	// substring rule to touch it.
-	if leaksShortAnswer(normalisedText, normaliseWhitespace(c.ExpectedOutput)) {
+	if leaksShortAnswer(normalisedText, normaliseForLeak(c.ExpectedOutput)) {
 		return fmt.Errorf("%w: the expected output is stated as the answer", ErrLeak)
 	}
 
@@ -588,4 +598,15 @@ func leaksShortAnswer(normalisedText, answer string) bool {
 // a sentence.
 func normaliseWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// normaliseForLeak is the comparison form both sides of a leak check are
+// put into: confusables folded to ASCII and zero-width characters
+// dropped, then whitespace collapsed.
+//
+// The order matters. Folding first turns a zero-width space into
+// nothing rather than into a word boundary, so "9<ZWSP>9" compares equal
+// to "99" instead of to "9 9".
+func normaliseForLeak(s string) string {
+	return normaliseWhitespace(normaliseConfusables(s))
 }

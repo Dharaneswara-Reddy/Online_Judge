@@ -213,7 +213,7 @@ optional here.
 | `ANTHROPIC_API_KEY` | *(unset)* | Fallback, consulted only when there is no Groq key |
 | `ASSIST_BASE_URL` | *(unset)* | Any other OpenAI-compatible endpoint |
 | `ASSIST_ENABLED` | `true` | Kill switch, independent of every key |
-| `ASSIST_MODEL` | `llama-3.3-70b-versatile` | Model used for every assist call |
+| `ASSIST_MODEL` | `openai/gpt-oss-120b` | Model used for every assist call |
 
 **Groq is the intended provider, and it wins when both keys are set.** A judge
 running on a free-tier host cannot carry a per-hint bill, and that is the whole
@@ -227,7 +227,24 @@ keeps answering 200.
 
 `ASSIST_MODEL` matters more than its default does. Identifiers on a free tier
 are retired and renamed regularly, so treat the constant in the code as a
-starting point and the environment variable as the real setting.
+starting point and the environment variable as the real setting. The default
+has already moved once, from `llama-3.3-70b-versatile` — which Groq announced a
+shutdown date for — to `openai/gpt-oss-120b`, which Groq lists as a production
+model and recommends for complex coding work.
+
+**Where the key goes.** Locally, `server/.env`; in production, `deploy/.env` on
+the host, which `docker-compose.prod.yml` reads. Both are git-ignored;
+`server/env.example` is the tracked template. Only the API container needs it —
+the worker judges code and never talks to a model.
+
+**The model id is checked at startup**, in the background, against the
+provider's own listing. Three outcomes are logged differently on purpose:
+verified, not available (with the ids that *are* available, which is the whole
+fix), and could-not-check. The last is not a failure — an unreachable listing
+says nothing about whether the model exists — and none of the three is fatal,
+because a judge must start and serve when the assistant cannot. A wrong id
+still degrades to a 502 on use; verification only moves the discovery from the
+first student who asks for a hint to the log line after the deploy.
 
 Two separate settings can leave the feature off, and they are logged
 differently on purpose: "nobody configured this" and "somebody turned this off"
@@ -268,6 +285,82 @@ generation therefore must not use it — otherwise one bad response removes the
 assistant for the rest of the session.
 
 ---
+
+## What has actually been validated
+
+The distinction matters more here than in most features, because a stub proves
+the plumbing and says nothing about the thing the feature is for.
+
+| Property | Status |
+|---|---|
+| Transport, both dialects | **Stub + unit tests.** The wire format is asserted against `httptest`, including which dialect carries the system prompt |
+| Provider selection, Groq over Anthropic | **Unit tested** by reading the outgoing request |
+| Auth, ownership, status contract | **Live server.** 401/403/404/409/400/502/503 all driven with curl through real middleware |
+| Cache | **Live server.** A repeat question returns `cached:true` without a second upstream call |
+| Output filter, both directions | **Live server.** 10/10 adversarial strings withheld, 5/5 realistic rung-4 outlines delivered |
+| Prompt-injection fencing | **Unit tested.** 15 vectors land inside the fence; rungs 1–2 never receive code at all |
+| Model availability check | **Unit tested** against a fake listing. Never run against Groq's real listing |
+| Telemetry | **Live server.** One record per request; asserted to carry no code, hint, key or hidden case |
+| Stuck detection | **Unit tested**, rule-based, no model involved |
+| **Hint quality at each rung** | **NOT VALIDATED.** No real model has ever seen these prompts |
+| **Model compliance with "never emit code"** | **NOT VALIDATED.** Only the filter's response to strings we chose |
+| **Real latency and rate-limit behaviour** | **NOT VALIDATED** |
+
+Every "live server" row above was produced with a stub that returns whatever it
+is told. That is the right way to test a filter — you need to control what comes
+back — and the wrong way to learn anything about a model.
+
+## Real-model validation procedure
+
+`scripts/validate_assist.py` drives the same HTTP path a student's browser uses,
+against a real provider, on real seeded problems, using real judged submissions
+so that rung 3 and the verdict explanation are grounded in an actual failure
+rather than a synthetic one.
+
+It needs three things running: the API with a real key, **a judge worker**
+(without one, submissions sit pending forever and rungs 3–4 have nothing real to
+describe), and a seeded database.
+
+    go run ./cmd/api        # with GROQ_API_KEY set
+    go run ./cmd/worker
+    go run ./cmd/seed
+    python3 scripts/validate_assist.py --json-out run.json
+
+It submits a solution that is wrong in a specific way and one that is
+deliberately too slow, so a wrong-answer and a time-limit verdict both exist;
+walks all four rungs across six problems; asks for a verdict explanation twice
+to exercise the cache; and prints every generated hint, because the judgement
+that matters is a human reading them. It reports delivered/withheld/cached
+counts, latency, and a reviewer flag on any delivered text that looks like code.
+
+The counts are not the deliverable. **Useful student-safe hints over total real
+requests** is a human judgement over the printed text, and no script computes
+it.
+
+## Failure behaviour
+
+| Situation | What happens |
+|---|---|
+| No key configured | Endpoints answer 503; the client hides the feature; judging is untouched |
+| Provider unreachable or times out | 502, bounded by a 25s client timeout; the judge never waits on it |
+| Provider returns 429 | 502 to the caller; the per-user limiter caps how often this can be reached |
+| Model id wrong | Startup warning naming the available ids; 502 on use |
+| Response contains code | Withheld, 502; the text is discarded, never trimmed |
+| Response echoes the hidden case | Withheld, 502 |
+| Cache hit | No upstream call at all |
+
+Nothing in the assist path can block judging: it is a separate request, on a
+separate route, with its own timeout, and the worker never calls a model.
+
+## Rate limits and cost
+
+Per user, per minute: 10 hints, 15 explanations, 5 reviews, 5 case generations.
+These sit on top of the ownership checks and exist so that a bug in the client
+cannot turn a refresh loop into a bill.
+
+The caching table above is the other half. Rungs 1–2 and verdict explanations
+are shared across students, which is where most of the traffic is; rungs 3–4 and
+reviews are about one person's code and are never shared.
 
 ## Disclosure
 

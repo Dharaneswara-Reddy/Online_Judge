@@ -573,3 +573,56 @@ func TestRejectLeakAllowsUnframedShortAnswer(t *testing.T) {
 		t.Fatalf("RejectLeak(%q) = %v; this gap is deliberate — see the comment", text, err)
 	}
 }
+
+// --- Gap D: confusable folding on the leak filter ------------------------
+//
+// RejectCode normalises confusables; RejectLeak did not, so a hidden
+// case echoed with Cyrillic digits-alikes or a zero-width space wedged
+// into it walked straight past a filter whose entire job is to notice
+// that exact text. Folding both sides closes it, but "verbatim" then
+// means "verbatim after folding", so the false-positive direction needs
+// its own check: ordinary prose about a problem must not start matching
+// a case it merely discusses.
+
+func TestRejectLeakCatchesAnObfuscatedEcho(t *testing.T) {
+	hidden := HiddenCase{Input: "6\n17 42 99 13 58 21", ExpectedOutput: "250"}
+
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"verbatim", "Your code fails on 17 42 99 13 58 21 because of the ordering."},
+		{"reflowed whitespace", "It fails on 17   42  99\t13 58 21 for that reason."},
+		{"zero-width spaces wedged in", "It fails on 17 42 9​9 13 58 21 there."},
+		{"fullwidth digits", "It fails on １７ 42 99 13 58 21 there."},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := RejectLeak(tc.text, hidden); err == nil {
+				t.Fatalf("RejectLeak allowed an echo of the hidden case: %q", tc.text)
+			}
+		})
+	}
+}
+
+// TestRejectLeakStillAllowsDescribingTheCase is the direction that
+// matters more. Rung 3 exists to describe a hidden case; a leak filter
+// that fires on any discussion of it makes the rung unusable.
+func TestRejectLeakStillAllowsDescribingTheCase(t *testing.T) {
+	hidden := HiddenCase{Input: "6\n17 42 99 13 58 21", ExpectedOutput: "250"}
+
+	allowed := []string{
+		"The case you fail has its largest value early, before the smallest one.",
+		"Every element in that input is positive, and there are six of them.",
+		"Think about what happens when the peak comes before the dip.",
+		"Your running total starts at zero; is that right for this input?",
+		"The failing input has six values and none of them repeat.",
+	}
+
+	for _, text := range allowed {
+		if err := RejectLeak(text, hidden); err != nil {
+			t.Errorf("RejectLeak refused a legitimate description: %q -> %v", text, err)
+		}
+	}
+}

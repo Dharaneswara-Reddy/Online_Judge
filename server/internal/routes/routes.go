@@ -5,6 +5,7 @@ package routes
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -375,14 +376,27 @@ func Setup(db *mongo.Database, cfg *config.Config, deps Deps) *gin.Engine {
 	//     cacheable, and a review is the most expensive generation the
 	//     feature makes.
 	assistProvider := newAssistProvider(cfg)
+	verifyAssistModel(assistProvider)
 	assistSvc := newAssistService(assistProvider)
 	assistController := controllers.NewAssistController(assistSvc, problemSvc, submissionSvc)
 
+	//     Every assist route carries a telemetry record: these are the
+	//     only requests in the API that cost money and that can fail for
+	//     reasons the caller never sees, so how often the filter
+	//     withheld a generation and how much traffic the cache absorbed
+	//     are worth knowing without instrumenting each handler by hand.
+	assistTelemetry := gin.HandlersChain{
+		middleware.AssistTelemetry(),
+		middleware.AssistIdentity(assistProviderName(cfg), assistModelName(cfg)),
+	}
+
 	publicProblems.GET("/:slug/assist/state",
-		middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions), assistController.State)
+		middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions),
+		assistTelemetry[0], assistTelemetry[1], assistController.State)
 
 	assistGroup := router.Group("/api/assist")
 	assistGroup.Use(middleware.AuthMiddleware(cfg.JWTSecret, deps.Sessions))
+	assistGroup.Use(assistTelemetry...)
 	{
 		assistGroup.POST("/hint",
 			middleware.RateLimit(deps.Limiter, "assist-hint", 10, time.Minute), assistController.Hint)
@@ -462,6 +476,84 @@ func newAssistProvider(cfg *config.Config) assist.Provider {
 	log.Println("Assist: no GROQ_API_KEY or ANTHROPIC_API_KEY set — hints, explanations, reviews and case generation are off")
 	return nil
 }
+
+// assistProviderName and assistModelName name what handled a request,
+// for the telemetry record. They are derived from configuration rather
+// than asked of the provider, because a provider that is nil still
+// produces requests worth recording.
+func assistProviderName(cfg *config.Config) string {
+	switch {
+	case !cfg.AssistEnabled:
+		return "off"
+	case cfg.GroqAPIKey != "" && cfg.AssistBaseURL != "":
+		return "openai-compatible"
+	case cfg.GroqAPIKey != "":
+		return "groq"
+	case cfg.AnthropicAPIKey != "":
+		return "anthropic"
+	default:
+		return "none"
+	}
+}
+
+func assistModelName(cfg *config.Config) string {
+	if cfg.AssistModel != "" {
+		return cfg.AssistModel
+	}
+	if cfg.GroqAPIKey != "" {
+		return assist.DefaultGroqModel
+	}
+	if cfg.AnthropicAPIKey != "" {
+		return assist.DefaultModel
+	}
+	return ""
+}
+
+// verifyAssistModel checks in the background that the configured model
+// exists, and reports the three possible answers differently.
+//
+// It runs in a goroutine and is never fatal, for the same reason the
+// whole feature is optional: a judge must start and serve when the
+// assistant cannot. A wrong model id still degrades to a 502 on use,
+// exactly as before — this only moves the discovery from the first
+// student who asks for a hint to the log line after the deploy that
+// caused it.
+//
+// "Not available" and "could not check" are logged as different things
+// on purpose. The first means change ASSIST_MODEL; the second means look
+// at the network or the credential, and printing it as the first would
+// send someone to edit a setting that was correct.
+func verifyAssistModel(provider assist.Provider) {
+	verifier, ok := provider.(assist.Verifier)
+	if !ok {
+		// Either no provider is configured, or this one publishes no
+		// listing to check against. Neither is worth a line.
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), assistVerifyTimeout)
+		defer cancel()
+
+		switch err := verifier.VerifyModel(ctx); {
+		case err == nil:
+			log.Println("Assist: verified the configured model is available")
+		case errors.Is(err, assist.ErrModelUnavailable):
+			log.Printf("WARNING: Assist: %v", err)
+			log.Println("WARNING: Assist: set ASSIST_MODEL to one of the ids above; " +
+				"hints will answer 502 until you do")
+		default:
+			log.Printf("WARNING: Assist: could not check the model (%v). "+
+				"This is not itself a failure — the model may be fine and the "+
+				"listing unreachable.", err)
+		}
+	}()
+}
+
+// assistVerifyTimeout bounds the startup check. It is generous relative
+// to a listing call and still short enough that a hung endpoint does not
+// leave a goroutine alive for the life of the process.
+const assistVerifyTimeout = 10 * time.Second
 
 // newAssistService wraps a provider in the hint/explain/review service.
 // A nil provider is a supported configuration and produces a Service

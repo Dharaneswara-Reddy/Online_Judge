@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/toji339/online-judge/internal/assist"
+	"github.com/toji339/online-judge/internal/middleware"
 	"github.com/toji339/online-judge/internal/problem"
 	"github.com/toji339/online-judge/internal/submission"
 )
@@ -57,6 +58,22 @@ const attemptHistorySize = 20
 // otherwise one filtered response would make the assistant vanish for
 // the rest of the session.
 func respondToAssistFailure(c *gin.Context, err error) {
+	// Recorded before the response so the telemetry middleware sees a
+	// reason rather than inferring one from a status code that several
+	// different failures share.
+	switch {
+	case errors.Is(err, assist.ErrDisabled):
+		c.Set(middleware.AssistOutcomeKey, "disabled")
+	case errors.Is(err, assist.ErrInvalidRung):
+		c.Set(middleware.AssistOutcomeKey, "invalid-rung")
+	case errors.Is(err, assist.ErrLeak):
+		c.Set(middleware.AssistOutcomeKey, "filtered-leak")
+	case errors.Is(err, assist.ErrFiltered):
+		c.Set(middleware.AssistOutcomeKey, "filtered-code")
+	default:
+		c.Set(middleware.AssistOutcomeKey, "unavailable")
+	}
+
 	switch {
 	case errors.Is(err, assist.ErrDisabled):
 		c.JSON(http.StatusServiceUnavailable, gin.H{
@@ -91,6 +108,7 @@ func respondToAssistFailure(c *gin.Context, err error) {
 // decide whether to render anything at all — and a disabled deployment
 // should produce a quiet absence rather than an error in the console.
 func (ac *AssistController) State(c *gin.Context) {
+	c.Set(middleware.AssistFeatureKey, "state")
 	if !ac.assist.Enabled() {
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
@@ -140,6 +158,10 @@ func (ac *AssistController) Hint(c *gin.Context) {
 		return
 	}
 
+	c.Set(middleware.AssistFeatureKey, "hint")
+	c.Set(middleware.AssistRungKey, body.Rung)
+	c.Set(middleware.AssistProblemKey, body.ProblemSlug)
+
 	if !ac.assist.Enabled() {
 		respondToAssistFailure(c, assist.ErrDisabled)
 		return
@@ -186,6 +208,8 @@ func (ac *AssistController) Hint(c *gin.Context) {
 		return
 	}
 
+	c.Set(middleware.AssistCachedKey, hint.Cached)
+	c.Set(middleware.AssistOutcomeKey, outcomeFor(hint.Cached))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    gin.H{"rung": int(hint.Rung), "text": hint.Text, "cached": hint.Cached},
@@ -200,6 +224,7 @@ func (ac *AssistController) Hint(c *gin.Context) {
 // because a client that could name its own verdict could ask for an
 // explanation of a problem it has not attempted.
 func (ac *AssistController) Explain(c *gin.Context) {
+	c.Set(middleware.AssistFeatureKey, "explain")
 	sub, prob, ok := ac.ownedSubmission(c)
 	if !ok {
 		return
@@ -229,6 +254,8 @@ func (ac *AssistController) Explain(c *gin.Context) {
 		return
 	}
 
+	c.Set(middleware.AssistCachedKey, explanation.Cached)
+	c.Set(middleware.AssistOutcomeKey, outcomeFor(explanation.Cached))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    gin.H{"text": explanation.Text, "cached": explanation.Cached},
@@ -243,6 +270,7 @@ func (ac *AssistController) Explain(c *gin.Context) {
 // steps. Once the judge has accepted it, there is nothing left to give
 // away.
 func (ac *AssistController) Review(c *gin.Context) {
+	c.Set(middleware.AssistFeatureKey, "review")
 	sub, prob, ok := ac.ownedSubmission(c)
 	if !ok {
 		return
@@ -268,6 +296,7 @@ func (ac *AssistController) Review(c *gin.Context) {
 		return
 	}
 
+	c.Set(middleware.AssistOutcomeKey, "ok")
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"text": review.Text}})
 }
 
@@ -430,4 +459,13 @@ func problemContext(p *problem.Problem) assist.ProblemContext {
 		TimeLimitMS:   p.TimeLimitMS,
 		MemoryLimitMB: p.MemoryLimitMB,
 	}
+}
+
+// outcomeFor names a success by where the text came from, which is the
+// distinction that decides whether the request cost anything.
+func outcomeFor(cached bool) string {
+	if cached {
+		return "cached"
+	}
+	return "ok"
 }
