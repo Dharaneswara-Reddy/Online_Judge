@@ -415,3 +415,42 @@
   color: var(--accent);
   background: rgba(227, 168, 87, 0.1);
 }
+
+/* ── Right pane stacking ──
+   The editor, the hint ladder, the verdict banner and the execution panel
+   are siblings in one flex column inside `overflow: hidden`. Before this,
+   only the editor had a flex basis: everything below it was free to grow,
+   so a long AI response — a rung-4 outline, or an eight-heading review —
+   pushed its own panel out of the column and drew on top of Monaco. The
+   result was a "Show me a little more" button that was visibly present,
+   reported as stable and clickable, and impossible to click, because the
+   editor's own layer was intercepting the pointer. A browser found that;
+   no unit test could have.
+
+   So the editor yields, and every panel below it is fixed-size and
+   scrolls its own overflow. */
+.pd-editor-wrap {
+  flex: 1 1 auto;
+  min-height: 200px;
+}
+
+.pd-right > .assist-hints,
+.pd-right > .pd-verdict-banner {
+  flex: 0 0 auto;
+  max-height: 38vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The banner is a flex row that now scrolls; its children must not be
+   stretched by the scroll container. */
+.pd-right > .pd-verdict-banner {
+  align-items: flex-start;
+}
+
+/* A verdict explanation or review is prose inside a row-flex banner, so
+   it needs the whole width rather than a share of the row. */
+.assist-insight-body {
+  flex-basis: 100%;
+  min-width: 0;
+}
